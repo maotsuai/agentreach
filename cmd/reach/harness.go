@@ -42,13 +42,31 @@ func cmdCodex(ctx context.Context, args []string) int {
 	}
 
 	sessName := sessionNameFromEnv(*name)
+	s, loadErr := session.Load(sessName)
+	if loadErr != nil {
+		fmt.Fprintln(os.Stderr, "reach:", loadErr)
+		return 1
+	}
+	if s.Managed != nil {
+		if *force || *fullAccess {
+			fmt.Fprintln(os.Stderr, "policy_denied: managed Codex forbids --force and --danger-full-access")
+			return 1
+		}
+		if err := checkManagedArgs("codex", harnessArgs); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+	}
 
 	// Fail-closed seam guard. The verdict now measures the exec-server seam
 	// end to end: the probe's codex runs against a throwaway CODEX_HOME whose
 	// environments.toml points at this same reach binary, and the canary must
 	// report the target's hostname. --force is the operator's explicit escape
 	// hatch, and it says so on stderr.
-	if *force {
+	if s.Managed != nil {
+		// A fresh probe below uses the exact resolved executable, never the
+		// legacy version-only cache.
+	} else if *force {
 		fmt.Fprintln(os.Stderr,
 			"reach: WARNING: --force skips the codex seam verification.\n"+
 				"reach: If the exec-server seam fails to engage, every command the agent\n"+
@@ -58,15 +76,23 @@ func cmdCodex(ctx context.Context, args []string) int {
 		return rc
 	}
 
-	s, err := session.Load(sessName)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "reach:", err)
-		return 1
-	}
 	binPath, err := lookHarnessPath("codex")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "reach: codex is not installed or not in PATH")
 		return 1
+	}
+	if s.Managed != nil {
+		binPath, err = managedHarnessExecutable(s, binPath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+	}
+	if s.Managed != nil {
+		if err := strictSeam(ctx, s, "codex", binPath, ""); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
 	}
 	codexHome, err := managedCodexHome(sessName)
 	if err != nil {
@@ -89,6 +115,19 @@ func cmdCodex(ctx context.Context, args []string) int {
 
 	env := replaceEnv(os.Environ(), "CODEX_HOME", codexHome)
 	env = replaceEnv(env, "REACH_SESSION", sessName)
+	if s.Managed != nil {
+		env, err = managedLaunchEnv(s, env)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		// Do not load .codex project configuration from the shared source tree.
+		// The executor reports the actual Guest workspace via environment/info.
+		if err := os.Chdir(codexHome); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+	}
 
 	fmt.Fprintf(os.Stderr, "reach: Codex -> %s (exec-server; every tool acts on the target)\n", s.Target.Describe())
 
@@ -103,6 +142,13 @@ func cmdCodex(ctx context.Context, args []string) int {
 // directory is reach's, so the file is rewritten on every launch: a reach
 // upgrade or a moved binary must not leave codex pointing at a stale path.
 func managedCodexHome(sessName string) (string, error) {
+	s, err := session.Load(sessName)
+	if err != nil {
+		return "", err
+	}
+	if err := s.CheckControlPaths(); err != nil {
+		return "", err
+	}
 	base := os.Getenv("REACH_HOME")
 	if base == "" {
 		home, err := os.UserHomeDir()
@@ -128,7 +174,14 @@ func managedCodexHome(sessName string) (string, error) {
 	// points somewhere else would be a silent change of credentials. Files
 	// that are absent are simply skipped — OPENAI_API_KEY may be the whole
 	// login.
-	for _, f := range []string{"auth.json", "config.toml"} {
+	files := []string{"auth.json", "config.toml"}
+	if s.Managed != nil {
+		files = []string{"auth.json"}
+		if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte("# Controlled managed project configuration.\n"), 0o600); err != nil {
+			return "", err
+		}
+	}
+	for _, f := range files {
 		data, err := os.ReadFile(filepath.Join(realHome, f))
 		if err != nil {
 			continue
@@ -145,7 +198,7 @@ func managedCodexHome(sessName string) (string, error) {
 	if resolved, err := filepath.EvalSymlinks(reachPath); err == nil {
 		reachPath = resolved
 	}
-	toml := execserver.EnvironmentsTOML(reachPath, sessName)
+	toml := execserver.EnvironmentsTOML(reachPath, sessName, s.Managed)
 	if err := os.WriteFile(filepath.Join(dir, "environments.toml"), []byte(toml), 0o600); err != nil {
 		return "", fmt.Errorf("write environments.toml: %w", err)
 	}
@@ -182,6 +235,10 @@ func cmdGoose(ctx context.Context, args []string) int {
 	s, err := session.Load(sessName)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "reach:", err)
+		return 1
+	}
+	if err := refuseUnverifiedManagedSession(s, "goose"); err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
 
@@ -250,6 +307,10 @@ func cmdGemini(ctx context.Context, args []string) int {
 	s, err := session.Load(sessName)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "reach:", err)
+		return 1
+	}
+	if err := refuseUnverifiedManagedSession(s, "gemini"); err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
 
@@ -344,6 +405,10 @@ func cmdKimi(ctx context.Context, args []string) int {
 	s, err := session.Load(sessName)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "reach:", err)
+		return 1
+	}
+	if err := refuseUnverifiedManagedSession(s, "kimi"); err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
 

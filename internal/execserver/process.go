@@ -81,7 +81,7 @@ type execParams struct {
 	PipeStdin bool              `json:"pipeStdin"`
 }
 
-func (s *Server) handleProcessStart(_ context.Context, raw json.RawMessage) (any, *rpcError) {
+func (s *Server) handleProcessStart(ctx context.Context, raw json.RawMessage) (any, *rpcError) {
 	var p execParams
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return nil, invalidParams("process/start: %v", err)
@@ -91,6 +91,12 @@ func (s *Server) handleProcessStart(_ context.Context, raw json.RawMessage) (any
 	}
 	if len(p.Argv) == 0 {
 		return nil, invalidParams("process/start: argv must not be empty")
+	}
+	if s.sess.Managed != nil && p.Tty {
+		return nil, invalidParams("process/start: tty is unsupported; managed commands use piped stdio")
+	}
+	if err := s.runtimeReady(ctx); err != nil {
+		return nil, internalError("%v", err)
 	}
 
 	s.mu.Lock()
@@ -134,6 +140,10 @@ func (s *Server) handleProcessStart(_ context.Context, raw json.RawMessage) (any
 		return nil, internalError("start on %s: %v", s.sess.Target.Describe(), err)
 	}
 
+	if err := s.runtimeReady(ctx); err != nil {
+		_ = st.Close()
+		return nil, internalError("%v", err)
+	}
 	proc := &process{
 		id:        p.ProcessID,
 		command:   command,
@@ -409,6 +419,9 @@ type writeParams struct {
 }
 
 func (s *Server) handleProcessWrite(raw json.RawMessage) (any, *rpcError) {
+	if err := s.runtimeReady(context.Background()); err != nil {
+		return nil, internalError("%v", err)
+	}
 	var params writeParams
 	if err := json.Unmarshal(raw, &params); err != nil {
 		return nil, invalidParams("process/write: %v", err)
@@ -473,6 +486,9 @@ type signalParams struct {
 }
 
 func (s *Server) handleProcessSignal(raw json.RawMessage) (any, *rpcError) {
+	if s.sess.Managed != nil {
+		return nil, invalidParams("process/signal: Guest signal delivery is unsupported; process/terminate closes the transport best effort and does not guarantee Guest termination")
+	}
 	var params signalParams
 	if err := json.Unmarshal(raw, &params); err != nil {
 		return nil, invalidParams("process/signal: %v", err)

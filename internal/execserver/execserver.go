@@ -101,11 +101,12 @@ type request struct {
 
 // Server is one exec-server connection bound to a reach session.
 type Server struct {
-	sess      *session.Session
-	t         transport.Transport
-	ops       fileops.FileOps
-	workspace string // the local directory codex was launched in
-	root      string // the session's root on the target
+	sess               *session.Session
+	t                  transport.Transport
+	ops                fileops.FileOps
+	workspace          string // the local directory codex was launched in
+	workspaceCanonical string // Host symlink spelling Codex may send (e.g. /private/var)
+	root               string // the session's root on the target
 
 	shellName string
 	shellPath string
@@ -124,7 +125,10 @@ type Server struct {
 
 	// order keeps requests about one path, handle or process in the order the
 	// client sent them, without serialising requests about different ones.
-	order *sequencer
+	order          *sequencer
+	checkRuntime   func(context.Context) error
+	runtimeMu      sync.Mutex
+	runtimeFailure error
 
 	// running counts the process pumps started by process/start. Close does
 	// not wait on it — a shutdown must not block behind a build the agent
@@ -167,45 +171,53 @@ func (s *Server) terminateAll() {
 // better reported to the operator at startup than as a failed tool call
 // mid-turn.
 func New(ctx context.Context, sess *session.Session, workspace string) (*Server, error) {
-	t, err := sess.Transport()
+	return newServer(ctx, sess, workspace, sess.CheckManaged)
+}
+
+func newServer(ctx context.Context, sess *session.Session, workspace string, check func(context.Context) error) (*Server, error) {
+	srv := &Server{sess: sess, checkRuntime: check, processes: map[string]*process{}, handles: map[string]string{}, order: newSequencer()}
+	t, err := sess.TransportGuard(srv.runtimeReady)
 	if err != nil {
 		return nil, err
 	}
-	sel, err := sess.FileOps(ctx, t)
+	srv.t = t
+	sel, err := sess.FileOpsGuard(ctx, t, srv.runtimeReady)
 	if err != nil {
+		if sess.Managed != nil {
+			_ = t.Close()
+		}
 		return nil, err
 	}
 	// Requests are answered concurrently here, and one handler answers them one
 	// at a time, so a large read would hold every other file operation behind
 	// it. Further handlers are started only when operations actually overlap.
 	ops := fileops.NewPool(sel.Ops, maxFileHandlers, func(ctx context.Context) (fileops.FileOps, error) {
-		more, err := sess.FileOps(ctx, t)
+		more, err := sess.FileOpsGuard(ctx, t, srv.runtimeReady)
 		if err != nil {
 			return nil, err
 		}
 		return more.Ops, nil
 	})
+	srv.ops = ops
 	name, shellPath, err := probeShell(ctx, t)
 	if err != nil {
 		_ = ops.Close()
+		if sess.Managed != nil {
+			_ = t.Close()
+		}
 		return nil, err
 	}
 	if workspace == "" {
 		workspace, _ = os.Getwd()
 	}
-	return &Server{
-		sess:      sess,
-		t:         t,
-		ops:       ops,
-		workspace: filepath.Clean(workspace),
-		root:      sess.Target.Workspace,
-		shellName: name,
-		shellPath: shellPath,
-		sessionID: "reach-" + randomHex(8),
-		processes: map[string]*process{},
-		handles:   map[string]string{},
-		order:     newSequencer(),
-	}, nil
+	canonicalWorkspace, _ := filepath.EvalSymlinks(workspace)
+	srv.workspace = filepath.Clean(workspace)
+	srv.workspaceCanonical = canonicalWorkspace
+	srv.root = sess.Target.Workspace
+	srv.shellName = name
+	srv.shellPath = shellPath
+	srv.sessionID = "reach-" + randomHex(8)
+	return srv, nil
 }
 
 // probeShell asks the target which POSIX shell it has. bash is preferred —
@@ -375,10 +387,21 @@ func (s *Server) handle(ctx context.Context, method string, params json.RawMessa
 	if rerr := s.requireInitialized(); rerr != nil {
 		return nil, rerr
 	}
+	if strings.HasPrefix(method, "fs/") && method != "fs/close" || method == "capabilityRoots/discoverV1" {
+		if err := s.runtimeReady(ctx); err != nil {
+			return nil, internalError("%v", err)
+		}
+	}
 	switch method {
 	case "environment/info":
+		if err := s.runtimeReady(ctx); err != nil {
+			return nil, internalError("%v", err)
+		}
 		return s.handleEnvironmentInfo()
 	case "environment/status":
+		if err := s.runtimeReady(ctx); err != nil {
+			return nil, internalError("%v", err)
+		}
 		return map[string]any{"status": "ready"}, nil
 	case "process/start":
 		return s.handleProcessStart(ctx, params)
@@ -517,14 +540,19 @@ func (s *Server) mapPath(p string) string {
 	// paths, and every one of them fell through to the "already a target path"
 	// branch — which is how a file the agent meant to read locally is read on
 	// the target instead.
-	ws := filepath.ToSlash(s.workspace)
 	from := filepath.ToSlash(p)
-	if ws != "" && ws != "/" {
-		if from == ws {
-			return s.root
-		}
-		if strings.HasPrefix(from, ws+"/") {
-			return path.Join(s.root, from[len(ws)+1:])
+	// Codex canonicalizes its Host cwd. Keep both spellings: macOS temporary
+	// homes may be created beneath /var while Codex sends /private/var. This
+	// maps protocol paths only; the user's shell command is never rewritten.
+	for _, workspace := range []string{s.workspace, s.workspaceCanonical} {
+		ws := filepath.ToSlash(workspace)
+		if ws != "" && ws != "/" {
+			if from == ws {
+				return s.root
+			}
+			if strings.HasPrefix(from, ws+"/") {
+				return path.Join(s.root, from[len(ws)+1:])
+			}
 		}
 	}
 	if strings.HasPrefix(from, "/") {
@@ -574,6 +602,54 @@ func (s *Server) retire(id string) {
 	}
 }
 
+// runtimeReady permanently retires this connection on its first failed guard.
+// I/O cleanup never holds runtimeMu, mu or a process mutex, so checked-out file
+// handlers and process pumps can unwind without a lock-order dependency.
+func (s *Server) runtimeReady(ctx context.Context) error {
+	s.runtimeMu.Lock()
+	failed := s.runtimeFailure
+	s.runtimeMu.Unlock()
+	if failed != nil {
+		return failed
+	}
+	err := s.checkRuntime(ctx)
+	s.runtimeMu.Lock()
+	first := err != nil && s.runtimeFailure == nil
+	if first {
+		s.runtimeFailure = err
+	}
+	failed = s.runtimeFailure
+	s.runtimeMu.Unlock()
+	if first {
+		s.mu.Lock()
+		procs := make([]*process, 0, len(s.processes))
+		for _, p := range s.processes {
+			procs = append(procs, p)
+		}
+		s.mu.Unlock()
+		for _, p := range procs {
+			p.mu.Lock()
+			p.stdinOpen = false
+			p.terminated = true
+			stdin, closeStream := p.stdin, p.stream.Close
+			p.mu.Unlock()
+			if stdin != nil {
+				_ = stdin.Close()
+			}
+			if closeStream != nil {
+				_ = closeStream()
+			}
+		}
+		if s.t != nil {
+			_ = s.t.Close()
+		}
+		if s.ops != nil {
+			_ = s.ops.Close()
+		}
+	}
+	return failed
+}
+
 // Close releases the file-operation strategies.
 //
 // The connection is deliberately left alone. This server's life is one agent
@@ -583,6 +659,10 @@ func (s *Server) retire(id string) {
 // the next `reach exec` paid a full reconnect for no reason the operator could
 // see. `reach down` ends the connection, because `reach down` ends the session.
 func (s *Server) Close() error {
+	if s.sess.Managed != nil {
+		s.terminateAll()
+		_ = s.t.Close()
+	}
 	return s.ops.Close()
 }
 
@@ -590,14 +670,18 @@ func (s *Server) Close() error {
 // reach binary as its exec-server. It is shared by `reach codex` (managed
 // CODEX_HOME) and the offline harness probe (throwaway CODEX_HOME), so the two
 // can never drift into different shapes.
-func EnvironmentsTOML(reachPath, sessName string) string {
+func EnvironmentsTOML(reachPath, sessName string, binding ...*session.Managed) string {
 	var b strings.Builder
 	b.WriteString("default = \"reach\"\ninclude_local = false\n\n")
 	b.WriteString("[[environments]]\n")
 	b.WriteString("id = \"reach\"\n")
 	b.WriteString("program = " + tomlString(reachPath) + "\n")
 	b.WriteString("args = [\"exec-server\"]\n")
-	b.WriteString("env = { REACH_SESSION = " + tomlString(sessName) + " }\n")
+	b.WriteString("env = { REACH_SESSION = " + tomlString(sessName))
+	if len(binding) > 0 && binding[0] != nil {
+		b.WriteString(", REACH_MANAGED = \"1\", REACH_MANAGED_PROJECT = " + tomlString(binding[0].ProjectID) + ", REACH_MANAGED_RECORD = " + tomlString(binding[0].RecordSHA256))
+	}
+	b.WriteString(" }\n")
 	return b.String()
 }
 

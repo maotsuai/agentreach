@@ -234,6 +234,19 @@ func ensureSession(ctx context.Context, target *session.Target, o *sessionOption
 	if name == "" {
 		name = pickSessionName(deriveSessionName(target), target)
 	}
+	previous, loadErr := session.Load(name)
+	if loadErr != nil && !errors.Is(loadErr, os.ErrNotExist) {
+		return nil, loadErr
+	}
+	if previous != nil && previous.Managed != nil {
+		if o.fresh || !sameTarget(previous.Target, target) || !optionsAgree(previous, o) {
+			return nil, fmt.Errorf("policy_denied: cannot replace or refresh a managed session; use --project %s", previous.Managed.ProjectID)
+		}
+		if err := previous.CheckManaged(ctx); err != nil {
+			return nil, err
+		}
+		return previous, nil
+	}
 
 	if !o.fresh {
 		existing, err := session.Load(name)

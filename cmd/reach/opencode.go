@@ -190,6 +190,9 @@ func cmdOpencode(_ context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := refuseUnverifiedManagedSession(s, "opencode"); err != nil {
+		return err
+	}
 	self, err := os.Executable()
 	if err != nil {
 		return err

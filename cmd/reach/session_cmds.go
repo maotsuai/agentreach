@@ -115,7 +115,14 @@ func cmdUp(ctx context.Context, args []string) error {
 	// target" happened: a second `reach up` with no --name replaced the first
 	// session, and the agent that was using it started running its commands on
 	// a different machine.
-	if previous, err := session.Load(o.name); err == nil && !sameTarget(previous.Target, target) {
+	previous, loadErr := session.Load(o.name)
+	if loadErr != nil && !errors.Is(loadErr, os.ErrNotExist) {
+		return loadErr
+	}
+	if previous != nil && previous.Managed != nil {
+		return fmt.Errorf("policy_denied: cannot overwrite managed session; use --project %s", previous.Managed.ProjectID)
+	}
+	if previous != nil && !sameTarget(previous.Target, target) {
 		fmt.Fprintf(os.Stderr,
 			"reach: session %q pointed at %s; it now points at %s.\n"+
 				"  To keep both, name them — or let the target name them for you:\n"+
@@ -389,9 +396,14 @@ func cmdEnv(_ context.Context, args []string) error {
 		return err
 	}
 	name := sess(pos)
-	if _, err := session.Load(name); err != nil {
+	s, err := session.Load(name)
+	if err != nil {
 		return err
 	}
+	if err := refuseUnverifiedManagedSession(s, "env"); err != nil {
+		return err
+	}
+
 	shim, shimErr := ensureShim()
 	if shimErr != nil {
 		return shimErr

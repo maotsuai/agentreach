@@ -14,8 +14,10 @@ import (
 	"time"
 
 	"github.com/bojieli/agentreach/internal/execserver"
+	"github.com/bojieli/agentreach/internal/project"
 	"github.com/bojieli/agentreach/internal/reach"
 	"github.com/bojieli/agentreach/internal/session"
+	"github.com/bojieli/agentreach/internal/transport"
 )
 
 // DefaultTimeout bounds one probe run. A healthy turn against the mock takes
@@ -64,6 +66,11 @@ type Options struct {
 	// hostname are always appended so the verdict logic is unchanged.
 	// Example: "cat /srv/app/README.md" tests that file reads on the target work.
 	CommandPrefix string
+	// StrictClaudeSettings uses the same controlled sources/tool set as the
+	// managed launcher. It deliberately does not use a cached verdict.
+	StrictClaudeSettings string
+	// ManagedPath is the already checked Host PATH shared with version/launch.
+	ManagedPath string
 }
 
 // harnessSpec is the per-harness slice of the probe: which dialect the mock
@@ -155,7 +162,7 @@ func Verify(ctx context.Context, opts Options) Result {
 		if err != nil {
 			return Result{Verdict: VerdictError, Detail: "install the shell-prefix alias: " + err.Error()}
 		}
-	} else {
+	} else if sess.Managed == nil || opts.Harness != HarnessCodex {
 		if opts.EnsureShim == nil {
 			return Result{Verdict: VerdictError, Detail: "no shim installer configured"}
 		}
@@ -178,8 +185,26 @@ func Verify(ctx context.Context, opts Options) Result {
 	if opts.CommandPrefix != "" {
 		mock.SetCommand(opts.CommandPrefix + " && echo " + marker + "; hostname")
 	}
+	if sess.Managed != nil {
+		// An absolute-path command can appear to work even with the wrong cwd.
+		// Measure the launcher contract as well as the target hostname.
+		prefix := ""
+		if opts.CommandPrefix != "" {
+			prefix = "( " + opts.CommandPrefix + "\n) && "
+		}
+		mock.SetCommand(prefix + "test \"$(pwd -P)\" = " + transport.ShellQuote(managedProbeCwd(sess, opts.Harness)) + " && echo " + marker + " && hostname")
+	}
 
-	home, err := os.MkdirTemp("", "reach-"+opts.Harness+"-home-")
+	homeRoot := ""
+	if sess.Managed != nil {
+		// Ambient TMPDIR can itself name a Guest-writable bind. Use the
+		// verified Host control root for every managed probe's cwd and HOME.
+		homeRoot, err = project.Home()
+		if err != nil {
+			return Result{Verdict: VerdictError, Detail: err.Error()}
+		}
+	}
+	home, err := os.MkdirTemp(homeRoot, "reach-"+opts.Harness+"-home-")
 	if err != nil {
 		return Result{Verdict: VerdictError, Detail: "create a temporary home directory: " + err.Error()}
 	}
@@ -192,8 +217,21 @@ func Verify(ctx context.Context, opts Options) Result {
 	}
 
 	cmd := exec.CommandContext(ctx, binPath, spec.args(mock.BaseURL())...)
+	if sess.Managed != nil && opts.Harness == HarnessClaudeCode {
+		if opts.StrictClaudeSettings == "" {
+			return Result{Verdict: VerdictError, Detail: "managed Claude probe requires controlled settings"}
+		}
+		cmd.Args = append(cmd.Args, ManagedClaudeArgs(opts.StrictClaudeSettings)...)
+	}
 	cmd.Env = spec.env(sess.Name, shimDir, home, mock.BaseURL())
-	if spec.workingDir != "" {
+	if sess.Managed != nil {
+		cmd.Env = ManagedEnvironment(cmd.Env)
+		cmd.Env = replaceProbeEnv(cmd.Env, "PATH", opts.ManagedPath)
+		cmd.Env = sess.ManagedEnvironment(cmd.Env)
+		// Like the managed launch, never discover project-local Host config.
+		cmd.Dir = home
+	}
+	if sess.Managed == nil && spec.workingDir != "" {
 		cmd.Dir = spec.workingDir
 	}
 	// The launchers set REACH_EXEC_WORKSPACE to the directory they were run
@@ -202,7 +240,9 @@ func Verify(ctx context.Context, opts Options) Result {
 	// measuring a seam nothing ships: kimi's commands reached the target and
 	// then failed on `cd /tmp`, and the probe called that inconclusive rather
 	// than reporting the interception that had plainly worked.
-	cmd.Env = append(cmd.Env, "REACH_EXEC_WORKSPACE="+probeWorkspace(cmd.Dir))
+	if sess.Managed == nil {
+		cmd.Env = append(cmd.Env, "REACH_EXEC_WORKSPACE="+probeWorkspace(cmd.Dir))
+	}
 	// Output is captured rather than inherited: a failing probe needs the
 	// tail of it as evidence, and a succeeding one has nothing worth the
 	// operator's screen.
@@ -210,10 +250,9 @@ func Verify(ctx context.Context, opts Options) Result {
 	cmd.Stdout, cmd.Stderr = &out, &out
 	runErr := cmd.Run()
 
-	// By the time the harness exits, its final request has been answered — the
-	// mock records the tool output before replying — so the result is already
-	// settled. The short wait only covers a harness that died mid-request.
-	mock.Wait(ctx.Done())
+	// The mock records output before replying, so Run returning settles the
+	// evidence. Waiting for a result here would hide an already-exited harness's
+	// diagnostic until the entire probe timeout when it never called the tool.
 	toolOutput, observed := mock.Result()
 
 	if ctx.Err() == context.DeadlineExceeded {
@@ -230,7 +269,7 @@ func Verify(ctx context.Context, opts Options) Result {
 			"%s did not finish the scripted turn within %s (%s). Output tail: %s",
 			opts.Harness, timeout, reached, out.Tail())}
 	}
-	if runErr != nil && !observed {
+	if runErr != nil && (!observed || sess.Managed != nil) {
 		return Result{Verdict: VerdictError, Detail: fmt.Sprintf(
 			"%s exited without completing the tool call: %v. Output tail: %s",
 			opts.Harness, runErr, out.Tail())}
@@ -433,7 +472,11 @@ func codexPrepare(home, sessName string) error {
 	if resolved, err := filepath.EvalSymlinks(reachPath); err == nil {
 		reachPath = resolved
 	}
-	toml := execserver.EnvironmentsTOML(reachPath, sessName)
+	s, err := session.Load(sessName)
+	if err != nil {
+		return err
+	}
+	toml := execserver.EnvironmentsTOML(reachPath, sessName, s.Managed)
 	if err := os.WriteFile(filepath.Join(home, "environments.toml"), []byte(toml), 0o600); err != nil {
 		return fmt.Errorf("write environments.toml: %w", err)
 	}
@@ -698,6 +741,11 @@ func claudeCodeEnv(sessName, shellPrefixPath, home, baseURL string) []string {
 		}
 		env = append(env, kv)
 	}
+	if os.Getenv("REACH_HOME") == "" {
+		if hd, err := os.UserHomeDir(); err == nil {
+			env = append(env, "REACH_HOME="+filepath.Join(hd, ".reach"))
+		}
+	}
 	return append(env,
 		"HOME="+home,
 		"ANTHROPIC_API_KEY=dummy",
@@ -761,9 +809,21 @@ func HarnessVersion(ctx context.Context, harness string) (string, error) {
 // normalised. Use this when the binary to version-check is not on PATH — for
 // example a reach-managed patched kimi bundle under ~/.reach/.
 func HarnessVersionFromBinary(ctx context.Context, binPath string) (string, error) {
+	return harnessVersion(ctx, binPath, "", nil)
+}
+
+// ManagedVersion runs the fixed fingerprinted executable from a trusted cwd
+// with the same cleaned execution environment used by probe and launch.
+func ManagedVersion(ctx context.Context, binPath, dir string, env []string) (string, error) {
+	return harnessVersion(ctx, binPath, dir, env)
+}
+
+func harnessVersion(ctx context.Context, binPath, dir string, env []string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, binPath, "--version").Output()
+	cmd := exec.CommandContext(ctx, binPath, "--version")
+	cmd.Dir, cmd.Env = dir, env
+	out, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("%s --version: %w", binPath, err)
 	}
@@ -836,4 +896,20 @@ func lookHarnessPath(name string) (string, error) {
 		return "", fmt.Errorf("resolve %s: %w", p, absErr)
 	}
 	return abs, nil
+}
+
+func replaceProbeEnv(env []string, key, value string) []string {
+	var out []string
+	for _, e := range env {
+		if !strings.HasPrefix(e, key+"=") {
+			out = append(out, e)
+		}
+	}
+	return append(out, key+"="+value)
+}
+func managedProbeCwd(s *session.Session, harness string) string {
+	if harness == HarnessClaudeCode {
+		return s.Cwd()
+	}
+	return s.Target.Workspace
 }

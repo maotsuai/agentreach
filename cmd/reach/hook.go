@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"github.com/bojieli/agentreach/internal/audit"
 	"github.com/bojieli/agentreach/internal/mirror"
 	"github.com/bojieli/agentreach/internal/session"
+	"github.com/bojieli/agentreach/internal/state"
 )
 
 // hookEvent is the JSON a harness sends a hook on stdin.
@@ -62,7 +64,7 @@ var scanTools = map[string]bool{"Grep": true, "Glob": true}
 func runHook(_ []string) int {
 	raw, err := io.ReadAll(os.Stdin)
 	if err != nil {
-		emit(hookReply{})
+		emit(deny(hookEvent{HookEventName: "PreToolUse"}, "policy_denied: unreadable hook"))
 		return 0
 	}
 	emit(hookDecide(context.Background(), raw))
@@ -75,14 +77,42 @@ func runHook(_ []string) int {
 // harness on stdin. Everything here returns a reply rather than exiting: the
 // caller's only job is to print it.
 func hookDecide(ctx context.Context, raw []byte) hookReply {
+	s, loadErr := session.Load(sessionNameFromEnv(""))
+	strict := os.Getenv("REACH_MANAGED") == "1" || s != nil && s.Managed != nil || loadErr != nil && !errors.Is(loadErr, os.ErrNotExist)
 	var ev hookEvent
 	if err := json.Unmarshal(raw, &ev); err != nil {
+		if strict {
+			return deny(hookEvent{HookEventName: "PreToolUse"}, "policy_denied: malformed managed hook")
+		}
 		return hookReply{}
 	}
 
-	s, err := session.Load(sessionNameFromEnv(""))
-	if err != nil {
+	if loadErr != nil {
+		if strict {
+			if ev.HookEventName == "" {
+				ev.HookEventName = "PreToolUse"
+			}
+			return deny(ev, "policy_denied: managed session unavailable")
+		}
 		return hookReply{} // not our business
+	}
+	if s.Managed != nil {
+		if err := state.CheckKeys(raw); err != nil {
+			return deny(hookEvent{HookEventName: "PreToolUse"}, "policy_denied: ambiguous hook input")
+		}
+		if err := s.CheckManaged(ctx); err != nil {
+			return deny(ev, "reach: "+err.Error())
+		}
+		if ev.ToolName != "Bash" || ev.HookEventName != "PreToolUse" {
+			return deny(ev, "policy_denied: unmanaged tool/event")
+		}
+		var input struct {
+			Command string `json:"command"`
+		}
+		if err := json.Unmarshal(ev.ToolInput, &input); err != nil || input.Command == "" {
+			return deny(ev, "policy_denied: malformed Bash input")
+		}
+		return hookBash(ev, s)
 	}
 
 	// Bash runs on the target in every mode, so what reach knows about it does

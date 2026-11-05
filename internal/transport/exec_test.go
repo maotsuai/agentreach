@@ -2,6 +2,8 @@ package transport
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -104,8 +106,38 @@ func TestShellQuoteSurvivesHostileInput(t *testing.T) {
 
 func TestBuildCommandChainsDirectorySafely(t *testing.T) {
 	got := BuildCommand(reach.ExecRequest{Command: "ls", Dir: "/tmp/a b"})
-	if !strings.HasPrefix(got, "cd '/tmp/a b' && ") {
-		t.Errorf("directory not chained with &&: %q", got)
+	if !strings.HasPrefix(got, "cd '/tmp/a b' || exit $?\n") {
+		t.Errorf("directory failure does not exit before the body: %q", got)
+	}
+}
+
+func TestMissingDirectoryPreventsEntireCommandBody(t *testing.T) {
+	tr := localTransport(t)
+	for _, env := range []map[string]string{nil, {"REACH_A": "one"}, {"REACH_A": "one", "REACH_B": "two"}} {
+		dir := t.TempDir()
+		marker := filepath.Join(dir, "must-not-exist")
+		res, err := tr.Run(context.Background(), reach.ExecRequest{
+			Dir: filepath.Join(dir, "missing"), Env: env,
+			Command: "true; printf bad > " + ShellQuote(marker) + "\n{ printf also-bad >> " + ShellQuote(marker) + "; }",
+		})
+		if err != nil || res.Code == 0 {
+			t.Fatalf("missing cwd must be a nonzero command result, result=%+v err=%v", res, err)
+		}
+		if _, err := os.Stat(marker); !os.IsNotExist(err) {
+			t.Fatalf("body ran despite missing cwd: %v", err)
+		}
+	}
+}
+
+func TestDirectoryAndEnvironmentPreserveHeredocBody(t *testing.T) {
+	tr := localTransport(t)
+	dir := t.TempDir()
+	res, err := tr.Run(context.Background(), reach.ExecRequest{
+		Dir: dir, Env: map[string]string{"REACH_VALUE": "one two"},
+		Command: "cat > relative <<'EOF'\nfirst\nEOF\nprintf '%s' \"$REACH_VALUE\" >> relative\ncat relative\nexit 7",
+	})
+	if err != nil || res.Code != 7 || string(res.Stdout) != "first\none two" {
+		t.Fatalf("heredoc/env/exit changed: result=%+v err=%v", res, err)
 	}
 }
 

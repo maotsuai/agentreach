@@ -61,6 +61,10 @@ func cmdGrok(ctx context.Context, args []string) int {
 		fmt.Fprintln(os.Stderr, "reach:", err)
 		return 1
 	}
+	if err := refuseUnverifiedManagedSession(s, "grok"); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
 
 	binPath, err := lookHarnessPath("grok")
 	if err != nil {

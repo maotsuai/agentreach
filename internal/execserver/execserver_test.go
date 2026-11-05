@@ -159,9 +159,9 @@ type testEnv struct {
 
 func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
-	t.Setenv("REACH_HOME", t.TempDir())
-	root := t.TempDir()
-	workspace := t.TempDir()
+	t.Setenv("REACH_HOME", canonicalTempDir(t))
+	root := canonicalTempDir(t)
+	workspace := canonicalTempDir(t)
 
 	tr, err := transport.NewLocal()
 	if err != nil {
@@ -192,6 +192,15 @@ func newTestEnv(t *testing.T) *testEnv {
 	env := &testEnv{srv: srv, root: root, workspace: workspace}
 	env.client = newTestClient(t, srv)
 	return env
+}
+
+func canonicalTempDir(t *testing.T) string {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resolved
 }
 
 // initialize drives the handshake codex performs.

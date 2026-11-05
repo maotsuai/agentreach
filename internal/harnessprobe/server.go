@@ -65,6 +65,7 @@ type Mock struct {
 	// command, when set, overrides the default "echo <marker>; hostname"
 	// probe command. SetCommand sets it after construction.
 	command string
+	patch   string
 
 	mu         sync.Mutex
 	toolResult string
@@ -136,6 +137,11 @@ func (m *Mock) Close() { m.srv.Close() }
 // The default is "echo <marker>; hostname". Call SetCommand before the first
 // request arrives; changing it after the first request is a data race.
 func (m *Mock) SetCommand(cmd string) { m.command = cmd }
+
+// SetPatch scripts Codex's native custom apply_patch tool instead of a shell
+// approximation. Configure before starting the real harness. This is used by
+// the offline managed-launch conformance helper, never to rewrite commands.
+func (m *Mock) SetPatch(patch string) { m.patch = patch }
 
 // Result returns the tool output the harness reported, and whether any tool
 // output was observed at all.
@@ -212,7 +218,7 @@ func (m *Mock) serveResponses(w http.ResponseWriter, r *http.Request) {
 	// value wrapping the real output; store it raw either way, matching the
 	// reference mock in test/mockmodel/server.py.
 	for _, item := range req.Input {
-		if item.Type != "function_call_output" || len(item.Output) == 0 {
+		if item.Type != "function_call_output" && item.Type != "custom_tool_call_output" || len(item.Output) == 0 {
 			continue
 		}
 		var out string
@@ -234,14 +240,23 @@ func (m *Mock) serveResponses(w http.ResponseWriter, r *http.Request) {
 	})
 	if firstTurn {
 		name, args := m.pickTool(req.Tools)
+		item := map[string]any{"type": "function_call", "call_id": "call_reach_1", "name": name, "arguments": args}
+		if m.patch != "" {
+			advertised := false
+			for _, tool := range req.Tools {
+				advertised = advertised || tool.Type == "custom" && tool.Name == "apply_patch"
+			}
+			if !advertised {
+				// Deliberately return a visible failure rather than pretending a
+				// shell command proves a tool that the harness did not advertise.
+				item = map[string]any{"type": "message", "role": "assistant", "content": []map[string]any{{"type": "output_text", "text": "native apply_patch was not advertised"}}}
+			} else {
+				item = map[string]any{"type": "custom_tool_call", "call_id": "call_reach_1", "name": "apply_patch", "input": m.patch}
+			}
+		}
 		m.writeEvent(w, flusher, "response.output_item.done", map[string]any{
 			"type": "response.output_item.done",
-			"item": map[string]any{
-				"type":      "function_call",
-				"call_id":   "call_reach_1",
-				"name":      name,
-				"arguments": args,
-			},
+			"item": item,
 		})
 	} else {
 		out, _ := m.Result()

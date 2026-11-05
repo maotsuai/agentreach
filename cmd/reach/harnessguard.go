@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/bojieli/agentreach/internal/harnessprobe"
+	"github.com/bojieli/agentreach/internal/session"
 )
 
 // This file holds the seam guard: the check that a harness's shell tool calls
@@ -189,6 +191,28 @@ func cmdHarnessVerify(ctx context.Context, harness string, args []string) error 
 	}
 	if len(pos) > 0 {
 		return fmt.Errorf("unexpected argument %q", pos[0])
+	}
+	s, err := session.Load(sessName(pos))
+	if err != nil {
+		return err
+	}
+	if s.Managed != nil {
+		bin := *binaryPath
+		if bin == "" {
+			bin, err = lookHarnessPath(harness)
+			if err != nil {
+				return err
+			}
+		}
+		if !filepath.IsAbs(bin) {
+			return fmt.Errorf("policy_denied: managed probe requires an absolute binary path")
+		}
+		result, err := verifyManagedSeam(ctx, s, harness, bin, "", *taskPrefix)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("verdict: ok — %s\nmanaged probe used controlled settings and was not cached.\n", result.Detail)
+		return nil
 	}
 
 	// For kimi, use the managed patched binary if available — the same one

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -61,6 +62,30 @@ func runShellPrefix(args []string) int {
 	raw := strings.Join(args, " ")
 
 	p := envelope.ParseClaudeCode(raw)
+	s, loadErr := session.Load(sessionNameFromEnv(""))
+	if loadErr != nil && !errors.Is(loadErr, os.ErrNotExist) {
+		fmt.Fprintln(os.Stderr, "policy_denied: session unavailable:", loadErr)
+		return exitTransportFailure
+	}
+	if s != nil && s.Managed != nil {
+		if err := s.CheckManaged(context.Background()); err != nil {
+			fmt.Fprintln(os.Stderr, "reach:", err)
+			return exitTransportFailure
+		}
+		if isLocalCallback(p) {
+			registered, err := claudeHookCommand()
+			if err != nil || raw != registered {
+				fmt.Fprintln(os.Stderr, "policy_denied: unregistered local callback")
+				return exitTransportFailure
+			}
+			return runHook(nil)
+		}
+		return runOnSession(context.Background(), s, p.Command, p.CwdFile)
+	}
+	if os.Getenv("REACH_MANAGED") == "1" {
+		fmt.Fprintln(os.Stderr, "policy_denied: managed callback requires its registered session:", loadErr)
+		return exitTransportFailure
+	}
 	if isLocalCallback(p) {
 		// Run it the way Claude Code would have run it with no prefix in the
 		// way: through a local shell, inheriting this process's stdin, stdout
@@ -132,6 +157,19 @@ func runOnTarget(ctx context.Context, sessionName, command, cwdFile string) int 
 		fmt.Fprintln(os.Stderr, "reach:", err)
 		return exitTransportFailure
 	}
+	return runOnSession(ctx, s, command, cwdFile)
+}
+func runOnSession(ctx context.Context, s *session.Session, command, cwdFile string) int {
+	var managedRecord *managedCwdRecord
+	if s.Managed != nil && cwdFile != "" {
+		var err error
+		managedRecord, err = openManagedCwdRecord(cwdFile)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return exitTransportFailure
+		}
+		defer func() { _ = managedRecord.root.Close() }()
+	}
 	t, err := s.Transport()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "reach:", err)
@@ -188,7 +226,12 @@ func runOnTarget(ctx context.Context, sessionName, command, cwdFile string) int 
 		// Reproduce the harness's own bookkeeping on the local filesystem.
 		// Without this, `cd` silently stops persisting between tool calls.
 		if cwdFile != "" {
-			if err := os.WriteFile(cwdFile, []byte(newCwd+"\n"), 0o600); err != nil {
+			if managedRecord != nil {
+				if err := managedRecord.write(newCwd); err != nil {
+					fmt.Fprintln(os.Stderr, "reach: cwd record:", err)
+					return exitTransportFailure
+				}
+			} else if err := os.WriteFile(cwdFile, []byte(newCwd+"\n"), 0o600); err != nil {
 				fmt.Fprintf(os.Stderr, "reach: could not update the harness's record of the working directory: %v\n", err)
 			}
 		}

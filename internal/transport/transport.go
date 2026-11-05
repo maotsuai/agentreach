@@ -90,15 +90,15 @@ func ShellQuote(s string) string {
 
 // BuildCommand wraps a command with its working directory and environment.
 //
-// The `cd` is chained with && so a missing directory fails loudly rather than
-// silently running the command somewhere unintended, which on an untrusted
-// host could mean acting on the wrong tree entirely.
+// The directory check exits before any exports or command body. Chaining just
+// the first command with && would let later semicolon/newline-separated commands
+// run after a failed cd. Run/Open callers wrap this in their sentinel subshell.
 func BuildCommand(req reach.ExecRequest) string {
 	var b strings.Builder
 	if req.Dir != "" {
 		b.WriteString("cd ")
 		b.WriteString(ShellQuote(req.Dir))
-		b.WriteString(" && ")
+		b.WriteString(" || exit $?\n")
 	}
 	// `export K=V; cmd` rather than `env K=V cmd`.
 	//

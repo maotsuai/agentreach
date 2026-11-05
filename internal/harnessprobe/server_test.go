@@ -138,6 +138,30 @@ func TestMockWaitUnblocksOnResult(t *testing.T) {
 	}
 }
 
+func TestMockNativePatchUsesAdvertisedCustomToolAndCapturesOutput(t *testing.T) {
+	m := StartMock("PATCH", DialectResponses)
+	defer m.Close()
+	m.SetPatch("*** Begin Patch\n*** Add File: relative.txt\n+Guest\n*** End Patch\n")
+	first := postResponses(t, m, `{"input":[],"tools":[{"type":"custom","name":"apply_patch"}]}`)
+	if !strings.Contains(first, `"type":"custom_tool_call"`) || !strings.Contains(first, `"name":"apply_patch"`) || strings.Contains(first, `"type":"function_call"`) {
+		t.Fatalf("not a native patch tool call: %s", first)
+	}
+	postResponses(t, m, `{"input":[{"type":"custom_tool_call_output","call_id":"call_reach_1","output":"Success. Updated the following files:\nA relative.txt"}]}`)
+	if output, observed := m.Result(); !observed || !strings.Contains(output, "A relative.txt") {
+		t.Fatalf("lost native tool result: %q %v", output, observed)
+	}
+}
+
+func TestMockNativePatchDoesNotSubstituteAnUnadvertisedShell(t *testing.T) {
+	m := StartMock("PATCH", DialectResponses)
+	defer m.Close()
+	m.SetPatch("*** Begin Patch\n*** End Patch\n")
+	first := postResponses(t, m, `{"input":[],"tools":[{"type":"function","name":"exec_command"}]}`)
+	if !strings.Contains(first, "native apply_patch was not advertised") || strings.Contains(first, `"type":"function_call"`) {
+		t.Fatalf("silently substituted a shell approximation: %s", first)
+	}
+}
+
 func TestMockAdaptiveToolSelection(t *testing.T) {
 	cases := []struct {
 		name     string

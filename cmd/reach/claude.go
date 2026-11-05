@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 
 	"github.com/bojieli/agentreach/internal/harnessprobe"
 	"github.com/bojieli/agentreach/internal/session"
+	"github.com/bojieli/agentreach/internal/transport"
 )
 
 // deniedFileTools are Claude Code's native file tools.
@@ -61,7 +63,20 @@ func cmdClaude(ctx context.Context, args []string) int {
 		return 1
 	}
 
-	if code := guardClaudeSeam(ctx, sessName); code != 0 {
+	if s.Managed != nil {
+		if *allowFileTools || s.Mode != session.ModeExec {
+			fmt.Fprintln(os.Stderr, "policy_denied: managed Claude requires exec mode and denied local file tools")
+			return 1
+		}
+		if err := checkManagedArgs("claude", harnessArgs); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		if err := s.CheckManaged(ctx); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+	} else if code := guardClaudeSeam(ctx, sessName); code != 0 {
 		return code
 	}
 
@@ -75,6 +90,25 @@ func cmdClaude(ctx context.Context, args []string) int {
 		fmt.Fprintln(os.Stderr, "reach: Claude Code is not installed or not in PATH")
 		return 1
 	}
+	if s.Managed != nil {
+		claudePath, err = managedHarnessExecutable(s, claudePath)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+	}
+	strictSettings := ""
+	if s.Managed != nil {
+		strictSettings, err = writeDenySettings(sessName)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		if err := strictSeam(ctx, s, "claude", claudePath, strictSettings); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+	}
 
 	// A duplicate environment key is resolved by whichever end of the block
 	// the child reads first, so REACH_SESSION is replaced rather than
@@ -83,10 +117,27 @@ func cmdClaude(ctx context.Context, args []string) int {
 	// losing that race would point the agent at a different machine than the
 	// one this launch just named.
 	env := replaceEnv(os.Environ(), "REACH_SESSION", sessName)
+	if s.Managed != nil {
+		env, err = managedLaunchEnv(s, env)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		// Keep project-local hooks/plugins/config discovery outside Guest-writable
+		// source. Explicit settings and the Bash-only tool set still apply.
+		if err := os.Chdir(filepath.Dir(strictSettings)); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		env = replaceEnv(env, "PWD", filepath.Dir(strictSettings))
+	}
 	env = replaceEnv(env, "CLAUDE_CODE_SHELL_PREFIX", shim)
 
 	argv := []string{claudePath}
 	switch {
+	case s.Managed != nil:
+		argv = append(argv, strictClaudeArgs(strictSettings)...)
+		argv = append(argv, "--append-system-prompt", execModeGuidance)
 	case s.Mode == session.ModeMirror:
 		settings, err := writeMirrorSettings(sessName)
 		if err != nil {
@@ -142,11 +193,14 @@ type claudeMatcher struct {
 // back. reach names its own binary rather than trusting PATH: the hook has to
 // reach the same build that launched the session.
 func claudeHookCommand() (string, error) {
-	self, err := os.Executable()
+	// macOS reports the shell-prefix symlink from os.Executable when invoked
+	// through that alias. Registration and callback checks must name the same
+	// resolved executable, while retaining an exact command match.
+	self, err := selfPath()
 	if err != nil {
 		return "", err
 	}
-	return self + " hook", nil
+	return transport.ShellQuote(self) + " hook", nil
 }
 
 func claudeHookOn(matcher, hookCmd string) claudeMatcher {
@@ -249,6 +303,13 @@ func guardClaudeSeam(ctx context.Context, sessName string) int {
 // writeDenySettings emits a Claude Code settings file denying the local file
 // tools, and returns its path.
 func writeDenySettings(sessName string) (string, error) {
+	if s, err := session.Load(sessName); err == nil {
+		if err := s.CheckControlPaths(); err != nil {
+			return "", err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
 	dir, err := session.ConfDir()
 	if err != nil {
 		return "", err

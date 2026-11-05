@@ -13,7 +13,9 @@ import (
 	"time"
 
 	"github.com/bojieli/agentreach/internal/fileops"
+	"github.com/bojieli/agentreach/internal/project"
 	"github.com/bojieli/agentreach/internal/reach"
+	"github.com/bojieli/agentreach/internal/state"
 	"github.com/bojieli/agentreach/internal/transport"
 )
 
@@ -74,6 +76,7 @@ type Session struct {
 	// loads identically in the other.
 	// Timeout bounds an individual command.
 	Timeout time.Duration `json:"timeout"`
+	Managed *Managed      `json:"managed,omitempty"`
 }
 
 // SchemaVersion is the version of the session document this build writes.
@@ -90,7 +93,7 @@ type Session struct {
 // Raise this whenever the meaning of an existing field changes, and teach
 // migrate what the old meaning was. Adding a field that is correct when absent
 // does not need a bump; that is what the zero value is for.
-const SchemaVersion = 1
+const SchemaVersion = 2
 
 var nameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 
@@ -135,7 +138,10 @@ func ConfDir() (string, error) {
 }
 
 func pathFor(name string) (string, error) {
-	dir, err := Dir()
+	if !nameRE.MatchString(name) {
+		return "", fmt.Errorf("invalid session name %q", name)
+	}
+	dir, err := readDir()
 	if err != nil {
 		return "", err
 	}
@@ -143,7 +149,10 @@ func pathFor(name string) (string, error) {
 }
 
 func cwdPathFor(name string) (string, error) {
-	dir, err := Dir()
+	if !nameRE.MatchString(name) {
+		return "", fmt.Errorf("invalid session name %q", name)
+	}
+	dir, err := readDir()
 	if err != nil {
 		return "", err
 	}
@@ -155,21 +164,36 @@ func (s *Session) Save() error {
 	if !nameRE.MatchString(s.Name) {
 		return fmt.Errorf("invalid session name %q: use letters, digits, dot, dash or underscore", s.Name)
 	}
+	if err := s.CheckControlPaths(); err != nil {
+		return err
+	}
 	s.TierName = s.Tier.String()
 	s.Version = SchemaVersion
+	if _, err := Dir(); err != nil {
+		return err
+	}
 	p, err := pathFor(s.Name)
 	if err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(s, "", "  ")
+	lockCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	unlock, err := state.Lock(lockCtx, p+".lock")
 	if err != nil {
 		return err
 	}
-	tmp := p + ".tmp"
-	if err := os.WriteFile(tmp, append(data, '\n'), 0o600); err != nil {
+	defer unlock()
+	if old, err := Load(s.Name); err == nil {
+		if old.Managed != nil && (s.Managed == nil || *s.Managed != *old.Managed) {
+			return fmt.Errorf("policy_denied: cannot downgrade or replace managed session")
+		}
+		if old.Managed == nil && s.Managed != nil {
+			return fmt.Errorf("policy_denied: cannot replace an existing legacy session with a managed binding")
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	return os.Rename(tmp, p)
+	return state.Write(p, s)
 }
 
 // Load reads a session by name.
@@ -177,6 +201,16 @@ func Load(name string) (*Session, error) {
 	p, err := pathFor(name)
 	if err != nil {
 		return nil, err
+	}
+	fi, err := os.Lstat(p)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, &noSuchSessionError{name: name}
+		}
+		return nil, err
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("state_corrupt: session %q is not a regular file", name)
 	}
 	data, err := os.ReadFile(p)
 	if err != nil {
@@ -186,16 +220,30 @@ func Load(name string) (*Session, error) {
 		return nil, err
 	}
 	var s Session
+	if err := state.CheckKeys(data); err != nil {
+		return nil, fmt.Errorf("session %q is corrupt: %w", name, err)
+	}
 	if err := json.Unmarshal(data, &s); err != nil {
 		return nil, fmt.Errorf("session %q is corrupt (%w); remove %s and start it again", name, err, p)
+	}
+	if s.Managed != nil {
+		if err := state.Decode(data, &s); err != nil {
+			return nil, fmt.Errorf("managed session is corrupt: %w", err)
+		}
 	}
 	// Defence in depth: a document that parses as JSON but is not a session
 	// must not produce a Session with nil fields that callers will dereference.
 	if s.Target == nil || s.Name == "" {
 		return nil, fmt.Errorf("%s %w", p, ErrNotSession)
 	}
+	if s.Name != name {
+		return nil, fmt.Errorf("session name does not match its file")
+	}
 	if err := migrate(&s); err != nil {
 		return nil, fmt.Errorf("session %q: %w", name, err)
+	}
+	if err := s.checkManagedContext(); err != nil {
+		return nil, err
 	}
 	return &s, nil
 }
@@ -208,6 +256,12 @@ func Load(name string) (*Session, error) {
 // somewhere, and the operator's only evidence about where is the file reach has
 // just decided not to trust.
 func migrate(s *Session) error {
+	if s.Version < 0 {
+		return fmt.Errorf("state_corrupt: invalid negative session schema")
+	}
+	if s.Managed != nil && s.Version < 2 {
+		return fmt.Errorf("managed session requires schema v2; refusing legacy safety fields")
+	}
 	if s.Version > SchemaVersion {
 		return fmt.Errorf("this session was created by a newer reach (schema v%d, this build understands v%d).\n"+
 			"Upgrade reach, or run `reach down %s` and start the session again with this build.\n"+
@@ -287,12 +341,15 @@ type Broken struct {
 // whose agent is at that moment pointed at one. The reason it will not load is
 // the single most useful thing reach knows at that point.
 func List() ([]*Session, []Broken, error) {
-	dir, err := Dir()
+	dir, err := readDir()
 	if err != nil {
 		return nil, nil, err
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil, nil
+		}
 		return nil, nil, err
 	}
 	var out []*Session
@@ -391,6 +448,9 @@ func (s *Session) SetCwd(cwd string) error {
 	if cwd == "" {
 		return nil
 	}
+	if _, err := Dir(); err != nil {
+		return err
+	}
 	p, err := cwdPathFor(s.Name)
 	if err != nil {
 		return err
@@ -406,7 +466,7 @@ func (s *Session) SetCwd(cwd string) error {
 // no interactive prompts, so an expired credential fails fast instead of
 // hanging a tool call on a password prompt the agent cannot see or answer.
 func (s *Session) Transport() (transport.Transport, error) {
-	return s.transport(true)
+	return s.transport(true, s.CheckManaged)
 }
 
 // InteractiveTransport allows ssh to prompt.
@@ -416,10 +476,23 @@ func (s *Session) Transport() (transport.Transport, error) {
 // is the one moment an operator is present to answer. Afterwards ControlMaster
 // keeps the authenticated connection alive, so later tool calls never prompt.
 func (s *Session) InteractiveTransport() (transport.Transport, error) {
-	return s.transport(false)
+	return s.transport(false, s.CheckManaged)
 }
 
-func (s *Session) transport(batch bool) (transport.Transport, error) {
+// TransportGuard gives a connection's managed transport the same guard used by
+// its file strategies. Legacy transports keep their existing behaviour.
+func (s *Session) TransportGuard(check func(context.Context) error) (transport.Transport, error) {
+	return s.transport(true, check)
+}
+
+func (s *Session) transport(batch bool, check func(context.Context) error) (transport.Transport, error) {
+	if s.Managed != nil {
+		r, err := s.ManagedProject()
+		if err != nil {
+			return nil, err
+		}
+		return s.managedTransport(r, check)
+	}
 	switch s.Target.Kind {
 	case KindSSH:
 		return transport.NewSSH(transport.SSHConfig{
@@ -598,6 +671,14 @@ func (s *Session) rootedTwin(a map[string]string, wrote string) string {
 	return why + fmt.Sprintf("write %s:%s or ssh://%s/%s.", host, rooted, host, rooted)
 }
 
+func (s *Session) managedTransport(r project.Record, check func(context.Context) error) (transport.Transport, error) {
+	env, err := r.Spec.Docker.Environment()
+	if err != nil {
+		return nil, err
+	}
+	return transport.NewContainer(transport.ContainerConfig{Runtime: r.Spec.Docker.CLI, Argv0: "docker", Container: r.Binding.ContainerID, Args: r.Spec.Docker.ExecArgs(), Env: env, Check: check})
+}
+
 // tildeWord is what may appear before the first slash of a tilde path. It is a
 // whitelist because the word is handed to the target's shell unquoted — that
 // is the only way to get a tilde expanded — and anything outside this set
@@ -611,8 +692,32 @@ var tildeWord = regexp.MustCompile(`^~[A-Za-z0-9._-]*$`)
 // stderr, because a host that stopped answering on its usual tier should keep
 // working, but not without the operator being able to see that it changed.
 func (s *Session) FileOps(ctx context.Context, t transport.Transport) (fileops.Selection, error) {
+	return s.FileOpsGuard(ctx, t, s.CheckManaged)
+}
+
+// FileOpsGuard lets a connection invalidate all its channels on guard failure.
+func (s *Session) FileOpsGuard(ctx context.Context, t transport.Transport, check func(context.Context) error) (fileops.Selection, error) {
+	if err := check(ctx); err != nil {
+		return fileops.Selection{}, err
+	}
 	warn := func(msg string) { fmt.Fprintln(os.Stderr, msg) }
-	return fileops.New(ctx, s.Tier, t, s.Caps, s.Pinned, warn)
+	sel, err := fileops.New(ctx, s.Tier, t, s.Caps, s.Pinned, warn)
+	if err == nil && s.Managed != nil {
+		sel.Ops = fileops.Guard(sel.Ops, check)
+	}
+	return sel, err
+}
+
+func readDir() (string, error) {
+	base := os.Getenv("REACH_HOME")
+	if base == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		base = filepath.Join(home, ".reach")
+	}
+	return filepath.Join(base, "sessions"), nil
 }
 
 // Probe connects to the target, records its capabilities, and settles which
@@ -649,6 +754,10 @@ func (s *Session) Probe(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	return s.probeWithTransport(ctx, t, s.CheckManaged)
+}
+
+func (s *Session) probeWithTransport(ctx context.Context, t transport.Transport, check func(context.Context) error) error {
 	// A multiplexed transport is deliberately not closed. Close tears down the
 	// master, and that master holds the authentication just performed in front
 	// of the operator; throwing it away would hand the first tool call a
@@ -686,7 +795,10 @@ func (s *Session) Probe(ctx context.Context) error {
 		s.Tier = caps.BestTier()
 	}
 
-	sel, err := s.FileOps(ctx, t)
+	if err := check(ctx); err != nil {
+		return err
+	}
+	sel, err := fileops.New(ctx, s.Tier, t, s.Caps, s.Pinned, func(msg string) { fmt.Fprintln(os.Stderr, msg) })
 	if err != nil {
 		return err
 	}

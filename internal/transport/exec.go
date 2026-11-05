@@ -215,7 +215,19 @@ func (w *capWriter) Truncated() bool {
 // It is shared by every transport that ultimately spawns a local process
 // (ssh, docker, kubectl, local).
 func runLocalProcess(ctx context.Context, argv []string, stdin []byte, maxOut int64) (stdoutB, stderrB []byte, code int, truncated bool, err error) {
+	return runLocalProcessEnv(ctx, argv, stdin, maxOut, nil)
+}
+
+func runLocalProcessEnv(ctx context.Context, argv []string, stdin []byte, maxOut int64, env []string) (stdoutB, stderrB []byte, code int, truncated bool, err error) {
+	return runLocalProcessAsEnv(ctx, argv, stdin, maxOut, env, "")
+}
+
+func runLocalProcessAsEnv(ctx context.Context, argv []string, stdin []byte, maxOut int64, env []string, argv0 string) (stdoutB, stderrB []byte, code int, truncated bool, err error) {
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	if argv0 != "" {
+		cmd.Args[0] = argv0
+	}
+	cmd.Env = env
 
 	// A command must never be left waiting on a terminal that will not arrive.
 	if len(stdin) > 0 {

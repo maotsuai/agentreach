@@ -116,6 +116,13 @@ type ContainerConfig struct {
 	User string
 	// Shell is the shell inside the container.
 	Shell string
+	// Managed callers pin both connection arguments and the child environment.
+	Args  []string
+	Env   []string
+	Check func(context.Context) error
+	// Argv0 selects a fixed multicall entrypoint while Runtime stays resolved.
+	// Empty preserves the ordinary Docker/Podman invocation name.
+	Argv0 string
 }
 
 // ContainerTransport runs commands inside a container via the runtime CLI.
@@ -124,7 +131,9 @@ type ContainerConfig struct {
 // path as ssh with no network in between, which makes it the honest way to
 // prove transparency claims before blaming a flaky link for a bug.
 type ContainerTransport struct {
-	cfg ContainerConfig
+	cfg     ContainerConfig
+	mu      sync.Mutex
+	streams map[*int]func() error
 }
 
 // NewContainer builds a container transport.
@@ -138,11 +147,31 @@ func NewContainer(cfg ContainerConfig) (*ContainerTransport, error) {
 	if cfg.Shell == "" {
 		cfg.Shell = "/bin/sh"
 	}
-	return &ContainerTransport{cfg: cfg}, nil
+	return &ContainerTransport{cfg: cfg, streams: map[*int]func() error{}}, nil
+}
+
+func (t *ContainerTransport) check(ctx context.Context) error {
+	if t.cfg.Check == nil {
+		return nil
+	}
+	if err := t.cfg.Check(ctx); err != nil {
+		t.mu.Lock()
+		var closeAll []func() error
+		for _, close := range t.streams {
+			closeAll = append(closeAll, close)
+		}
+		t.mu.Unlock()
+		for _, close := range closeAll {
+			_ = close()
+		}
+		return err
+	}
+	return nil
 }
 
 func (t *ContainerTransport) execArgs(interactive bool) []string {
-	args := []string{t.cfg.Runtime, "exec"}
+	args := append([]string{t.cfg.Runtime}, t.cfg.Args...)
+	args = append(args, "exec")
 	if interactive {
 		args = append(args, "-i")
 	}
@@ -154,6 +183,9 @@ func (t *ContainerTransport) execArgs(interactive bool) []string {
 
 // Run implements Transport.
 func (t *ContainerTransport) Run(ctx context.Context, req reach.ExecRequest) (reach.ExecResult, error) {
+	if err := t.check(ctx); err != nil {
+		return reach.ExecResult{}, err
+	}
 	if req.Timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, req.Timeout)
@@ -164,14 +196,21 @@ func (t *ContainerTransport) Run(ctx context.Context, req reach.ExecRequest) (re
 
 	argv := append(t.execArgs(len(req.Stdin) > 0), t.cfg.Shell, "-c", wrapped)
 	start := time.Now()
-	so, se, code, trunc, err := runLocalProcess(ctx, argv, req.Stdin, req.MaxOutput)
+	so, se, code, trunc, err := runLocalProcessAsEnv(ctx, argv, req.Stdin, req.MaxOutput, t.cfg.Env, t.cfg.Argv0)
 	return finishExec(start, so, se, code, trunc, sentinel, err, t.cfg.Runtime+" "+t.cfg.Container)
 }
 
 // Open implements Transport.
 func (t *ContainerTransport) Open(ctx context.Context, command string) (Stream, error) {
+	if err := t.check(ctx); err != nil {
+		return Stream{}, err
+	}
 	argv := append(t.execArgs(true), t.cfg.Shell, "-c", command)
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	if t.cfg.Argv0 != "" {
+		cmd.Args[0] = t.cfg.Argv0
+	}
+	cmd.Env = t.cfg.Env
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return Stream{}, err
@@ -203,16 +242,26 @@ func (t *ContainerTransport) Open(ctx context.Context, command string) (Stream, 
 		})
 		return waitCode, waitErr
 	}
+	key := new(int)
+	closeStream := func() error {
+		_ = stdin.Close()
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		_, _ = wait()
+		t.mu.Lock()
+		delete(t.streams, key)
+		t.mu.Unlock()
+		return nil
+	}
+	if t.cfg.Check != nil {
+		t.mu.Lock()
+		t.streams[key] = closeStream
+		t.mu.Unlock()
+	}
 	return Stream{
 		Stdin: stdin, Stdout: stdout, Stderr: stderr, Wait: wait,
-		Close: func() error {
-			_ = stdin.Close()
-			if cmd.Process != nil {
-				_ = cmd.Process.Kill()
-			}
-			_, _ = wait()
-			return nil
-		},
+		Close: closeStream,
 	}, nil
 }
 
@@ -222,6 +271,17 @@ func (t *ContainerTransport) Describe() string {
 }
 
 // Close implements Transport.
-func (t *ContainerTransport) Close() error { return nil }
+func (t *ContainerTransport) Close() error {
+	t.mu.Lock()
+	var all []func() error
+	for _, close := range t.streams {
+		all = append(all, close)
+	}
+	t.mu.Unlock()
+	for _, close := range all {
+		_ = close()
+	}
+	return nil
+}
 
 var _ Transport = (*ContainerTransport)(nil)

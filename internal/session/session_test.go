@@ -13,7 +13,7 @@ import (
 
 func withTempHome(t *testing.T) {
 	t.Helper()
-	dir := t.TempDir()
+	dir := canonicalTempDir(t)
 	t.Setenv("REACH_HOME", dir)
 }
 
@@ -297,4 +297,13 @@ func TestSharesConnectionDistinguishesCredentials(t *testing.T) {
 	if got := s.SharesConnectionWith(); len(got) != 0 {
 		t.Errorf("a session shares a connection with %v across a different user or port", got)
 	}
+}
+
+func canonicalTempDir(t *testing.T) string {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resolved
 }

@@ -1,0 +1,38 @@
+# Provision explicitly, after confirming OrbStack's actual external Storage.
+# project register / runtime health never run Compose or start this service.
+services:
+  workspace:
+    build:
+      context: .
+    image: agentreach-workspace:local
+    container_name: reach-${REACH_PROJECT_ID:?set an explicit project ID}
+    user: "10001:10001"
+    working_dir: /workspace/project
+    init: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    cpus: 2
+    mem_limit: 2g
+    pids_limit: 256
+    restart: "no"
+    labels:
+      dev.agentreach.managed: "true"
+      dev.agentreach.project: ${REACH_PROJECT_ID:?set an explicit project ID}
+    volumes:
+      - type: volume
+        source: workspace
+        target: /workspace/project
+    networks: [project]
+    # No Host ports, HOME, SSH agent, Docker socket or host namespaces.
+
+volumes:
+  workspace:
+    name: reach-${REACH_PROJECT_ID:?set an explicit project ID}-workspace
+    driver: local
+    labels:
+      dev.agentreach.project: ${REACH_PROJECT_ID:?set an explicit project ID}
+
+networks:
+  project:
+    name: reach-${REACH_PROJECT_ID:?set an explicit project ID}
+    driver: bridge

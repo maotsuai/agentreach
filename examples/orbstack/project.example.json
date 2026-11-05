@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "id": "my-project",
+  "provider": "orbstack-docker",
+  "docker": {
+    "cli": "/Applications/OrbStack.app/Contents/MacOS/xbin/docker-tools",
+    "context": "orbstack",
+    "endpoint": "unix:///Users/YOUR_USER/.orbstack/run/docker.sock",
+    "config_dir": "/Users/YOUR_USER/.docker",
+    "control_home": "/Users/YOUR_USER"
+  },
+  "container": "reach-my-project",
+  "workspace": {
+    "mode": "guest-owned",
+    "guest_path": "/workspace/project"
+  },
+  "engine_data_path": "/Volumes/ENGINE_DISK/OrbStack",
+  "orbstack_config": "/Users/YOUR_USER/.orbstack/vmconfig.json",
+  "volumes": [
+    {
+      "path": "/Volumes/ENGINE_DISK",
+      "uuid": "REPLACE_WITH_NATIVE_VOLUME_UUID",
+      "name": "ENGINE_DISK",
+      "sentinel": "/Volumes/ENGINE_DISK/agentreach-control/volume.sentinel",
+      "sentinel_sha256": "REPLACE_WITH_SHA256_OF_RANDOM_SENTINEL_CONTENT"
+    }
+  ],
+  "bind_mounts": [],
+  "named_volumes": [
+    {
+      "name": "reach-my-project-workspace",
+      "target": "/workspace/project",
+      "read_only": false
+    }
+  ]
+}

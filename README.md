@@ -410,6 +410,7 @@ model is in [docs/SECURITY.md](docs/SECURITY.md).
 | [HOW-IT-WORKS.md](docs/HOW-IT-WORKS.md) | the implementation in figures, and what reach is deliberately not |
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | how the pieces fit, and which alternatives got thrown out |
 | [TRANSPORTS.md](docs/TRANSPORTS.md) | the three file-operation tiers, benchmarked on real links |
+| [MANAGED-PROJECTS.md](docs/MANAGED-PROJECTS.md) | strict registration, storage checks and fail-closed OrbStack projects |
 | [RESEARCH.md](docs/RESEARCH.md) | what each agent does internally, with transcripts |
 | [SECURITY.md](docs/SECURITY.md) | threat model, and what reach won't save you from |
 | [WINDOWS.md](docs/WINDOWS.md) | running reach from Windows |

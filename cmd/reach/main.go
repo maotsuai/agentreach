@@ -23,6 +23,9 @@ SESSIONS
   down [name]       end a session and close its connection
   status [name]     show sessions
   doctor [name]     diagnose a target: what works, what degrades, and why
+	project register <config.json> | inspect <id>    managed OrbStack registration
+	runtime inspect|health <id>                     read-only runtime checks
+	--project <id> claude|codex|exec|fs ...          use an approved project
   log [name]        what reach has run and changed on the target
   helper <op>       inspect or remove the optional helper binary
 
@@ -133,6 +136,7 @@ var knownCommands = map[string]bool{
 	"claude": true, "codex": true, "kimi": true, "goose": true,
 	"gemini": true, "crush": true, "grok": true, "opencode": true,
 	"shell-prefix": true, "hook": true, "exec-server": true,
+	"project": true, "runtime": true, "--project": true,
 	"agent":   true,
 	"version": true, "--version": true, "-v": true,
 	"help": true, "--help": true, "-h": true,
@@ -146,52 +150,63 @@ var knownCommands = map[string]bool{
 // actually want. `up` and `down` remain for the sessions that outlive a single
 // agent, and for the ones several commands share.
 func dispatch(ctx context.Context, args []string) int {
-	if !knownCommands[args[0]] {
+	if len(args) == 0 {
+		fmt.Fprint(os.Stderr, usage)
+		return 2
+	}
+	command, rest := args[0], args[1:]
+	if !knownCommands[command] {
 		return runTargetFirst(ctx, args)
 	}
 
 	var err error
-	switch args[0] {
+	switch command {
+	case "project":
+		err = cmdProject(ctx, rest)
+	case "runtime":
+		err = cmdRuntime(ctx, rest)
+	case "--project":
+		return runProject(ctx, rest)
 	case "up":
-		err = cmdUp(ctx, args[1:])
+		err = cmdUp(ctx, rest)
 	case "down":
-		err = cmdDown(ctx, args[1:])
+		err = cmdDown(ctx, rest)
 	case "status":
-		err = cmdStatus(ctx, args[1:])
+		err = cmdStatus(ctx, rest)
 	case "doctor":
-		err = cmdDoctor(ctx, args[1:])
+		err = cmdDoctor(ctx, rest)
 	case "exec":
-		return cmdExec(ctx, args[1:])
+		return cmdExec(ctx, rest)
 	case "fs":
-		err = cmdFS(ctx, args[1:])
+		err = cmdFS(ctx, rest)
 	case "env":
-		err = cmdEnv(ctx, args[1:])
+		err = cmdEnv(ctx, rest)
 	case "claude":
-		return cmdClaude(ctx, args[1:])
+		return cmdClaude(ctx, rest)
 	case "codex":
-		return cmdCodex(ctx, args[1:])
+		return cmdCodex(ctx, rest)
 	case "kimi":
-		return cmdKimi(ctx, args[1:])
+		return cmdKimi(ctx, rest)
 	case "goose":
-		return cmdGoose(ctx, args[1:])
+		return cmdGoose(ctx, rest)
 	case "gemini":
-		return cmdGemini(ctx, args[1:])
+		return cmdGemini(ctx, rest)
 	case "crush":
-		return cmdCrush(ctx, args[1:])
+		return cmdCrush(ctx, rest)
 	case "grok":
-		return cmdGrok(ctx, args[1:])
+		return cmdGrok(ctx, rest)
 	case "opencode":
-		err = cmdOpencode(ctx, args[1:])
+		err = cmdOpencode(ctx, rest)
 	case "harness":
-		err = cmdHarness(ctx, args[1:])
+		err = cmdHarness(ctx, rest)
 	case "helper":
-		err = cmdHelper(ctx, args[1:])
+		err = cmdHelper(ctx, rest)
 	case "shell-prefix":
-		return runShellPrefix(args[1:])
+		return runShellPrefix(rest)
 	case "hook":
-		return runHook(args[1:])
+		return runHook(rest)
 	case "exec-server":
-		return cmdExecServer(ctx, args[1:])
+		return cmdExecServer(ctx, rest)
 	case "agent":
 		// Renamed. Anyone with this in a script or in muscle memory deserves
 		// the new name, not "unknown command".
@@ -199,7 +214,7 @@ func dispatch(ctx context.Context, args []string) int {
 			"It was renamed because \"agent\" already means the coding agent this tool " +
 			"drives, which made `reach agent uninstall` read like it removed Claude Code")
 	case "log":
-		err = cmdLog(ctx, args[1:])
+		err = cmdLog(ctx, rest)
 	case "version", "--version", "-v":
 		fmt.Println(versionLine())
 	case "help", "--help", "-h":
@@ -207,7 +222,7 @@ func dispatch(ctx context.Context, args []string) int {
 	default:
 		// Only reachable if knownCommands lists something this switch does not
 		// handle, which the drift test exists to prevent.
-		fmt.Fprintf(os.Stderr, "reach: %q is listed as a command but not handled\n", args[0])
+		fmt.Fprintf(os.Stderr, "reach: %q is listed as a command but not handled\n", command)
 		return 2
 	}
 	if err != nil {

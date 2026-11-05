@@ -47,6 +47,10 @@ func cmdCrush(ctx context.Context, args []string) int {
 		fmt.Fprintln(os.Stderr, "reach:", err)
 		return 1
 	}
+	if err := refuseUnverifiedManagedSession(s, "crush"); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
 
 	binPath, err := lookHarnessPath("crush")
 	if err != nil {
