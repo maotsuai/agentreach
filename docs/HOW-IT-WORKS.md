@@ -72,6 +72,12 @@ fetched until a tool asks for it, and a write is refused if the file changed on
 the target in between. That is a fetch, not a sync: there is nothing to
 reconcile, because nothing is being kept in step.
 
+Managed P2 is an explicit exception to the transparency description below:
+its fixed Host MCP bridge adds plan/execute/status, while ordinary Bash and
+file tools retain their Guest routes. Operator approval stays outside model
+tools, and every managed effect requires durable intent/result. See
+[POLICY.md](POLICY.md) for initialization, limits and failure semantics.
+
 ### It is not an MCP server, and the model sees no new tools
 
 The model still calls `Bash` and gets back stdout and an exit code. It still

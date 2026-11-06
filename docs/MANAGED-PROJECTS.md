@@ -1,4 +1,4 @@
-# Managed OrbStack projects (P0 + P1)
+# Managed OrbStack projects (P0 + P1 + P2)
 
 Managed projects add an explicit Host authorization around an **existing**
 OrbStack Docker container. Ordinary SSH, local, Docker and Podman sessions keep
@@ -94,6 +94,14 @@ deterministic SHA-256 suffix to stay within the 64-character session limit.
 `--project` forbids reach's `--session` override. Arguments after an explicit
 `--` remain Guest arguments, including an application's own `--session` option.
 
+## Initialize managed policy
+
+Before managed exec, file mutation or a harness readiness probe, explicitly run
+`reach policy init PROJECT_ID` on the Host. Guest effects then default to allow
+and Host capabilities to deny. A missing policy returns `policy_unavailable`;
+reads/inspect do not create one. See [POLICY.md](POLICY.md) for exact approvals,
+mandatory journal, 64 KiB canonical request ceiling, clocks and recovery limits.
+
 ## Runtime and storage contract
 
 Each new dispatch verifies:
@@ -160,9 +168,12 @@ refuse launch. A probe is evidence for the measured installed binary and tool
 surface, not a guarantee against arbitrary future behavior or mutable runtime
 dependencies.
 
-Managed Claude uses controlled settings only, an empty strict MCP configuration
-and the Bash-only tool set. Managed Codex has its own controlled `CODEX_HOME` and
-exec-server configuration; only auth is copied from the operator's Codex home.
+Managed Claude uses controlled settings, native Bash and one fixed strict MCP
+bridge with only `host_plan`, `host_execute`, `host_status`. Its exact generated
+bridge callback enters a typed handler through the shell prefix; it does not
+execute a Host shell. Managed Codex has its own controlled `CODEX_HOME`, fixed
+Host MCP configuration and exec-server; only auth is copied from the operator's
+Codex home. Operator approve/revoke are never model tools.
 Both launch from trusted control directories, outside Guest-writable project
 configuration. The probe uses the same strict tool/configuration options and
 controlled-directory posture, with temporary homes and dummy mock-model auth.
@@ -365,9 +376,11 @@ commands after they start. A dedicated
 bridge also does not prevent Guest access to reachable Host/network services.
 OrbStack's Guest IP/`.orb.local` routes and LAN reachability require separate
 network validation. An image ID does not prove an unchanged writable rootfs.
-The Host user can bypass reach and run Docker directly. Mandatory security audit,
-typed Host capabilities, persistent terminals, services/ports and reconciliation
-belong to later phases and are not delivered by P0.
+The Host user can bypass reach and run Docker directly. P2 adds mandatory
+security intent/result, explicit policy initialization and typed Host planning,
+approval and revocation; see [POLICY.md](POLICY.md). Production `open_url` still
+returns `exposure_unavailable` without P4, and port/service/runtime drivers are
+unsupported. Persistent terminals and reconciliation remain later work.
 
 To roll back code, revert the phase commit and retain records/resources. An older
 binary must refuse new session schemas; do not force it to rewrite managed state.

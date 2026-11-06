@@ -4,7 +4,7 @@ Verified against **2.1.233**. Re-verify with `make conformance`.
 
 The general modes below describe unmanaged sessions. The managed OrbStack
 profile was separately verified with Claude Code 2.1.220 and uses strict
-controlled settings, Bash only, and a required rooted Guest helper. Its starting
+controlled settings, native Bash, a fixed Host MCP bridge and a required rooted Guest helper. Its starting
 cwd is held through a directory fd, and validated physical cwd is the only value
 written to the narrow Host callback. Mirror/local-file opt-outs are refused.
 Host project/control-cwd aliases and the Guest root cannot strictly contain
@@ -12,6 +12,13 @@ each other by components; exact equality is allowed and ambiguity returns
 `path_denied` before dispatch. Existing records are not automatically migrated
 or rebound. See [managed paths](../MANAGED-PROJECTS.md#managed-paths-and-command-cwd)
 and [versioned evidence](../validation/P1.md).
+
+Managed P2 also enables only `host_plan`, `host_execute`, `host_status` through
+a fixed strict MCP configuration. Claude 2.1.220 prefixes MCP startup too: the
+exact generated bridge callback enters a typed handler without a Host shell.
+All other bare callbacks remain denied except the registered hook. Managed
+Bash effects require explicit policy initialization and durable intent/result.
+See [POLICY.md](../POLICY.md).
 
 ## Seam
 

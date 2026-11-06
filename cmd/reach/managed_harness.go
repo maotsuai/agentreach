@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/bojieli/agentreach/internal/harnessprobe"
+	"github.com/bojieli/agentreach/internal/host"
 	"github.com/bojieli/agentreach/internal/hostpath"
 	"github.com/bojieli/agentreach/internal/project"
 	"github.com/bojieli/agentreach/internal/session"
@@ -110,8 +111,8 @@ func requireManagedSeam(version string, result harnessprobe.Result) error {
 	return nil
 }
 
-func strictClaudeArgs(settings string) []string {
-	return harnessprobe.ManagedClaudeArgs(settings)
+func strictClaudeArgs(settings string, bridge ...string) []string {
+	return harnessprobe.ManagedClaudeArgs(settings, bridge...)
 }
 
 func managedProbeOptions(s *session.Session, harness, bin, settings, task string) (harnessprobe.Options, error) {
@@ -169,6 +170,10 @@ func verifyManagedSeam(ctx context.Context, s *session.Session, harness, bin, se
 		return harnessprobe.Result{}, err
 	}
 	opts.ManagedPath = path
+	opts.ManagedBridgeJSON, opts.ManagedBridgeTOML, err = host.Configuration(s, path)
+	if err != nil {
+		return harnessprobe.Result{}, err
+	}
 	fmt.Fprintf(os.Stderr, "reach: strictly verifying %s %s for project %s (fresh probe)\n", harness, version, s.Managed.ProjectID)
 	result := harnessprobe.Verify(ctx, opts)
 	if err := requireManagedSeam(version, result); err != nil {

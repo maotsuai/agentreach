@@ -752,7 +752,7 @@ func (s *Session) FileOpsGuard(ctx context.Context, t transport.Transport, names
 		var m workspace.Mapper
 		m, err = s.PathMapper()
 		if err == nil {
-			sel.Ops, err = fileops.NewRooted(ctx, t, m, namespace, s.Managed.RecordSHA256, &s.rootBinding)
+			sel.Ops, err = fileops.NewRooted(ctx, t, m, namespace, s.Managed.RecordSHA256, &s.rootBinding, s.guestEffect(check))
 			sel.Requested = s.Tier
 			sel.Effective = reach.TierHelper
 		}

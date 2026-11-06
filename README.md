@@ -84,6 +84,12 @@ not migrate or rebind existing projects. Use an independent Guest root such as
 and the [P1 validation record](docs/validation/P1.md). The SSH/unmanaged tier and
 mirror defaults described below retain their existing behavior.
 
+Managed effects require `reach policy init PROJECT_ID`. Guest execution and file
+mutations then use a mandatory durable security ledger. The fixed Host MCP bridge
+provides plan/execute/status; exact approvals and revocation stay with the Host
+operator. See [the P2 policy contract](docs/POLICY.md) and [validation](docs/validation/P2.md). Production `open_url` still
+requires P4 exposure registration.
+
 ## What it looks like
 
 ```console

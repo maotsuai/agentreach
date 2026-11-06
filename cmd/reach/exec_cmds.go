@@ -76,6 +76,14 @@ func runShellPrefix(args []string) int {
 			return exitTransportFailure
 		}
 		if isLocalCallback(p) {
+			bridge, bridgeErr := claudeBridgeCommand(s)
+			if bridgeErr == nil && raw == bridge {
+				if err := cmdHostBridge(context.Background(), []string{"--session", s.Name}); err != nil {
+					fmt.Fprintln(os.Stderr, err)
+					return exitTransportFailure
+				}
+				return 0
+			}
 			registered, err := claudeHookCommand()
 			if err != nil || raw != registered {
 				fmt.Fprintln(os.Stderr, "policy_denied: unregistered local callback")
@@ -227,7 +235,22 @@ func runOnSession(ctx context.Context, s *session.Session, command, cwdFile stri
 		req.Dir = ""
 		req.Env = nil
 	}
+	finish, e := s.BeginGuest(ctx, s.CheckManaged, "guest.exec", req)
+	if e != nil {
+		fmt.Fprintln(os.Stderr, "reach:", e)
+		return exitTransportFailure
+	}
 	code, err := transport.RunStream(ctx, t, req, os.Stdout, stderr)
+	outcome := "ok"
+	if err != nil {
+		outcome = "outcome_unknown"
+	} else if code != 0 {
+		outcome = "failed"
+	}
+	if e := finish(outcome, err); e != nil {
+		fmt.Fprintln(os.Stderr, "reach:", e)
+		return exitTransportFailure
+	}
 
 	// Record it either way. A command that failed to reach the target is as
 	// much a part of the account as one that ran.

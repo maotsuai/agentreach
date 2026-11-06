@@ -4,8 +4,16 @@ import "strings"
 
 // ManagedClaudeArgs is shared by strict probes and the real managed launcher.
 // Only the controlled settings may supply hooks, and only Bash is available.
-func ManagedClaudeArgs(settings string) []string {
-	return []string{"--setting-sources", "", "--settings", settings, "--tools", "Bash", "--strict-mcp-config", "--mcp-config", `{"mcpServers":{}}`}
+func ManagedClaudeArgs(settings string, bridge ...string) []string {
+	config := `{"mcpServers":{}}`
+	if len(bridge) > 0 {
+		config = bridge[0]
+	}
+	args := []string{"--setting-sources", "", "--settings", settings, "--tools", "Bash", "--strict-mcp-config", "--mcp-config", config}
+	if len(bridge) > 0 {
+		args = append(args, "--allowedTools", "mcp__reach_host__host_plan", "mcp__reach_host__host_execute", "mcp__reach_host__host_status")
+	}
+	return args
 }
 
 // ManagedEnvironment removes known shell/Node injection and workspace routing

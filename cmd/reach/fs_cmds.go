@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/bojieli/agentreach/internal/fileops"
+	"github.com/bojieli/agentreach/internal/policy"
 	"github.com/bojieli/agentreach/internal/reach"
 	"github.com/bojieli/agentreach/internal/session"
 )
@@ -168,14 +169,14 @@ func cmdFS(ctx context.Context, args []string) error {
 	case "write":
 		var reader io.Reader = os.Stdin
 		if s.Managed != nil {
-			reader = io.LimitReader(os.Stdin, 64<<20+1)
+			reader = io.LimitReader(os.Stdin, policy.MaxRequest+1)
 		}
 		data, err := io.ReadAll(reader)
 		if err != nil {
 			return err
 		}
-		if s.Managed != nil && len(data) > 64<<20 {
-			return fmt.Errorf("managed write exceeds 64 MiB limit")
+		if s.Managed != nil && len(data) > policy.MaxRequest {
+			return fmt.Errorf("request_too_large: managed write exceeds request budget")
 		}
 		target := resolvePath(s, arg)
 		werr := fo.Write(ctx, target, data, 0o644)

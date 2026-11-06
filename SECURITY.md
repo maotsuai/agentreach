@@ -43,6 +43,15 @@ of these properties is a vulnerability, not a bug:
   another is a correctness bug of the most serious kind, because the operator
   cannot see which tier answered.
 
+## Managed authorization
+
+Managed side effects require explicit policy initialization and durable intent
+before dispatch. Approval consumption and intent share one authoritative commit.
+A failed result write reports `outcome_unknown`; unresolved intent is never
+automatically replayed. Guest payloads use a private-key HMAC, and model tools
+contain no approve/revoke or Host shell entrypoint. See [POLICY.md](docs/POLICY.md)
+for the precise trust boundary, failure/retention budgets and rollback.
+
 ## The audit log
 
 reach records the commands it runs on a target to

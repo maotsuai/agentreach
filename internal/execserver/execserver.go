@@ -20,6 +20,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
@@ -31,6 +32,7 @@ import (
 
 	"github.com/bojieli/agentreach/internal/audit"
 	"github.com/bojieli/agentreach/internal/fileops"
+	"github.com/bojieli/agentreach/internal/policy"
 	"github.com/bojieli/agentreach/internal/reach"
 	"github.com/bojieli/agentreach/internal/session"
 	"github.com/bojieli/agentreach/internal/transport"
@@ -117,9 +119,11 @@ type Server struct {
 	out     io.Writer
 	writeMu sync.Mutex
 
-	mu            sync.Mutex // guards sawInitialize, processes, finished and handles
-	sawInitialize bool
-	processes     map[string]*process
+	mu               sync.Mutex // guards sawInitialize, processes, finished and handles
+	sawInitialize    bool
+	processes        map[string]*process
+	starting         map[string]bool
+	hostBridgeActive bool // at most one fixed MCP control stream per connection
 	// finished lists the ids of processes that have closed, oldest first, so
 	// the oldest can be dropped once too many have accumulated. See retire.
 	finished []string
@@ -285,6 +289,9 @@ func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 	// fs/readFile answers can carry several MiB of base64 in one frame; the
 	// default 64 KiB token limit would silently truncate the protocol stream.
 	sc.Buffer(make([]byte, 0, 1<<20), 64<<20)
+	if s.sess.Managed != nil {
+		sc.Buffer(make([]byte, 4096), policy.MaxRequest+1)
+	}
 	var wg sync.WaitGroup
 	for sc.Scan() {
 		line := sc.Bytes()
@@ -338,6 +345,9 @@ func (s *Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 		if !exited {
 			s.killStream(p)
 		}
+	}
+	if s.sess.Managed != nil && errors.Is(sc.Err(), bufio.ErrTooLong) {
+		return fmt.Errorf("request_too_large: managed RPC frame exceeds %d bytes", policy.MaxRequest)
 	}
 	return sc.Err()
 }

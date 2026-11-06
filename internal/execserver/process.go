@@ -55,14 +55,18 @@ type process struct {
 	// than applied twice, and writeOrder bounds how many are remembered. An
 	// interactive process can be written to for as long as the agent keeps
 	// talking to it, so remembering every id it ever saw grows without limit.
-	writeIDs   map[string]bool
-	writeOrder []string
-	terminated bool
-	stream     transport.Stream
+	writeIDs      map[string]bool
+	writeOrder    []string
+	managedWrites map[string]managedWrite
+	hostBridge    bool
+	terminated    bool
+	stream        transport.Stream
 	// notify is closed and replaced on every state change, broadcasting to
 	// blocked process/read callers.
 	notifyCh chan struct{}
 }
+
+type managedWrite struct{ chunk, outcome, failure string }
 
 // broadcast wakes every process/read waiting on this process. Callers hold mu.
 func (p *process) broadcast() {
@@ -100,44 +104,68 @@ func (s *Server) handleProcessStart(ctx context.Context, raw json.RawMessage) (a
 	}
 
 	s.mu.Lock()
-	if _, dup := s.processes[p.ProcessID]; dup {
+	if _, dup := s.processes[p.ProcessID]; dup || s.starting[p.ProcessID] {
 		s.mu.Unlock()
 		return nil, invalidParams("process/start: processId %q is already in use", p.ProcessID)
 	}
+	if s.starting == nil {
+		s.starting = map[string]bool{}
+	}
+	s.starting[p.ProcessID] = true
 	s.mu.Unlock()
-
-	dir, rerr := s.mapURI(p.Cwd)
-	if rerr != nil {
-		return nil, rerr
-	}
-	command := argvToCommand(p.Argv)
-
-	// The target's login PATH goes first so the agent gets the PATH the
-	// operator would have on that machine; codex's explicit env wins after it.
-	env := map[string]string{}
-	if s.sess.Caps != nil {
-		for k, v := range s.sess.Caps.Env() {
-			env[k] = v
-		}
-	}
-	for k, v := range p.Env {
-		env[k] = v
-	}
+	defer func() { s.mu.Lock(); delete(s.starting, p.ProcessID); s.mu.Unlock() }()
 
 	sentinel := transport.NewSentinel()
-	built, buildErr := s.sess.Command(reach.ExecRequest{Command: command, Dir: dir, Env: env})
-	if buildErr != nil {
-		return nil, invalidParams("process/start: %v", buildErr)
-	}
-	wrapped := transport.WrapWithSentinel(built, sentinel)
-
-	// The context deliberately outlives this request: a build the agent starts
-	// must not die because the process/start RPC was answered. It ends when the
-	// command exits or the connection does.
-	st, err := s.t.Open(context.Background(), wrapped)
+	st, isBridge, err := s.hostBridgeStream(p)
 	if err != nil {
-		s.record(audit.Entry{Action: "exec", Command: command, Dir: dir, Error: err.Error()})
-		return nil, internalError("start on %s: %v", s.sess.Target.Describe(), err)
+		return nil, internalError("%v", err)
+	}
+	dir := s.root
+	command := "[fixed Host MCP bridge]"
+	if !isBridge {
+		var rerr *rpcError
+		dir, rerr = s.mapURI(p.Cwd)
+		if rerr != nil {
+			return nil, rerr
+		}
+		command = argvToCommand(p.Argv)
+		env := map[string]string{}
+		if s.sess.Caps != nil {
+			for k, v := range s.sess.Caps.Env() {
+				env[k] = v
+			}
+		}
+		for k, v := range p.Env {
+			env[k] = v
+		}
+		built, buildErr := s.sess.Command(reach.ExecRequest{Command: command, Dir: dir, Env: env})
+		if buildErr != nil {
+			return nil, invalidParams("process/start: %v", buildErr)
+		}
+		wrapped := transport.WrapWithSentinel(built, sentinel)
+		finish, beginErr := s.sess.BeginGuest(ctx, s.runtimeReady, "guest.process_start", struct {
+			ID, Nonce string
+			Params    execParams
+			Command   string
+		}{p.ProcessID, s.sessionID, p, wrapped})
+		if beginErr != nil {
+			return nil, internalError("%v", beginErr)
+		}
+		st, err = s.t.Open(context.Background(), wrapped)
+		outcome := "ok"
+		if err != nil {
+			outcome = "outcome_unknown"
+		}
+		if resultErr := finish(outcome, err); resultErr != nil {
+			if err == nil {
+				_ = st.Close()
+			}
+			return nil, internalError("%v", resultErr)
+		}
+		if err != nil {
+			s.record(audit.Entry{Action: "exec", Command: command, Dir: dir, Error: err.Error()})
+			return nil, internalError("start on %s: %v", s.sess.Target.Describe(), err)
+		}
 	}
 
 	if err := s.runtimeReady(ctx); err != nil {
@@ -145,15 +173,17 @@ func (s *Server) handleProcessStart(ctx context.Context, raw json.RawMessage) (a
 		return nil, internalError("%v", err)
 	}
 	proc := &process{
-		id:        p.ProcessID,
-		command:   command,
-		dir:       dir,
-		nextSeq:   1,
-		stdin:     st.Stdin,
-		stdinOpen: p.PipeStdin || p.Tty,
-		writeIDs:  map[string]bool{},
-		notifyCh:  make(chan struct{}),
-		stream:    st,
+		id:            p.ProcessID,
+		command:       command,
+		dir:           dir,
+		nextSeq:       1,
+		stdin:         st.Stdin,
+		stdinOpen:     p.PipeStdin || p.Tty,
+		writeIDs:      map[string]bool{},
+		managedWrites: map[string]managedWrite{},
+		hostBridge:    isBridge,
+		notifyCh:      make(chan struct{}),
+		stream:        st,
 	}
 	s.mu.Lock()
 	s.processes[p.ProcessID] = proc
@@ -205,7 +235,13 @@ func (s *Server) runProcess(p *process, st transport.Stream, sentinel string) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		_, _ = io.Copy(filter, st.Stdout)
+		if p.hostBridge {
+			// MCP needs each complete JSON line immediately. A shell sentinel
+			// filter withholds a tail and would deadlock the next request.
+			_, _ = io.Copy(stdoutChunks, st.Stdout)
+		} else {
+			_, _ = io.Copy(filter, st.Stdout)
+		}
 	}()
 	go func() {
 		defer wg.Done()
@@ -216,7 +252,10 @@ func (s *Server) runProcess(p *process, st transport.Stream, sentinel string) {
 
 	code, ok := filter.ExitCode()
 	waitCode, waitErr := st.Wait()
-	_ = waitCode
+	if p.hostBridge {
+		code = waitCode
+		ok = waitErr == nil
+	}
 
 	p.mu.Lock()
 	p.exited = true
@@ -445,6 +484,28 @@ func (s *Server) handleProcessWrite(raw json.RawMessage) (any, *rpcError) {
 		p.mu.Unlock()
 		return map[string]any{"status": "stdinClosed"}, nil
 	}
+	if s.sess.Managed != nil {
+		if previous, ok := p.managedWrites[params.WriteID]; ok {
+			p.mu.Unlock()
+			if previous.chunk != params.Chunk {
+				return nil, invalidParams("request_mismatch: writeId parameters changed")
+			}
+			if previous.outcome != "accepted" {
+				if previous.failure != "" {
+					return nil, internalError("%s", previous.failure)
+				}
+				return nil, internalError("outcome_unknown: stdin write must not be replayed")
+			}
+			return map[string]any{"status": "accepted"}, nil
+		}
+		if len(p.managedWrites) >= maxRememberedWrites {
+			p.mu.Unlock()
+			return nil, internalError("request_budget: managed stdin write IDs exhausted")
+		}
+		// Reserve before dispatch. A partial/unknown write is never retried with
+		// this ID, even if its result could not be persisted.
+		p.managedWrites[params.WriteID] = managedWrite{chunk: params.Chunk, outcome: "outcome_unknown"}
+	}
 	if p.writeIDs[params.WriteID] {
 		// A retried write is acknowledged without writing the bytes twice.
 		p.mu.Unlock()
@@ -452,10 +513,44 @@ func (s *Server) handleProcessWrite(raw json.RawMessage) (any, *rpcError) {
 	}
 	p.mu.Unlock()
 
-	if _, err := p.stdin.Write(data); err != nil {
+	finish := func(string, error) error { return nil }
+	if !p.hostBridge {
+		var beginErr error
+		finish, beginErr = s.sess.BeginGuest(context.Background(), s.runtimeReady, "guest.stdin", struct {
+			Nonce  string
+			Params writeParams
+		}{s.sessionID, params})
+		if beginErr != nil {
+			p.mu.Lock()
+			delete(p.managedWrites, params.WriteID)
+			p.mu.Unlock()
+			return nil, internalError("%v", beginErr)
+		}
+	}
+
+	n, err := p.stdin.Write(data)
+	if n != len(data) && err == nil {
+		err = io.ErrShortWrite
+	}
+	outcome := "ok"
+	if err != nil || n != len(data) {
+		outcome = "outcome_unknown"
+	}
+	if resultErr := finish(outcome, err); resultErr != nil {
+		p.mu.Lock()
+		if s.sess.Managed != nil {
+			p.managedWrites[params.WriteID] = managedWrite{chunk: params.Chunk, outcome: "outcome_unknown", failure: resultErr.Error()}
+		}
+		p.mu.Unlock()
+		return nil, internalError("%v", resultErr)
+	}
+	if err != nil || n != len(data) {
 		return nil, internalError("write to process stdin: %v", err)
 	}
 	p.mu.Lock()
+	if s.sess.Managed != nil {
+		p.managedWrites[params.WriteID] = managedWrite{chunk: params.Chunk, outcome: "accepted"}
+	}
 	p.writeIDs[params.WriteID] = true
 	p.writeOrder = append(p.writeOrder, params.WriteID)
 	for len(p.writeOrder) > maxRememberedWrites {

@@ -70,7 +70,9 @@ type Options struct {
 	// managed launcher. It deliberately does not use a cached verdict.
 	StrictClaudeSettings string
 	// ManagedPath is the already checked Host PATH shared with version/launch.
-	ManagedPath string
+	ManagedPath       string
+	ManagedBridgeJSON string
+	ManagedBridgeTOML string
 }
 
 // harnessSpec is the per-harness slice of the probe: which dialect the mock
@@ -215,13 +217,24 @@ func Verify(ctx context.Context, opts Options) Result {
 			return Result{Verdict: VerdictError, Detail: "prepare the harness home: " + err.Error()}
 		}
 	}
+	if sess.Managed != nil && opts.Harness == HarnessCodex {
+		if opts.ManagedBridgeTOML == "" {
+			return Result{Verdict: VerdictError, Detail: "managed probe requires fixed bridge configuration"}
+		}
+		if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte(opts.ManagedBridgeTOML), 0o600); err != nil {
+			return Result{Verdict: VerdictError, Detail: err.Error()}
+		}
+	}
 
 	cmd := exec.CommandContext(ctx, binPath, spec.args(mock.BaseURL())...)
 	if sess.Managed != nil && opts.Harness == HarnessClaudeCode {
 		if opts.StrictClaudeSettings == "" {
 			return Result{Verdict: VerdictError, Detail: "managed Claude probe requires controlled settings"}
 		}
-		cmd.Args = append(cmd.Args, ManagedClaudeArgs(opts.StrictClaudeSettings)...)
+		if opts.ManagedBridgeJSON == "" {
+			return Result{Verdict: VerdictError, Detail: "managed probe requires fixed bridge configuration"}
+		}
+		cmd.Args = append(cmd.Args, ManagedClaudeArgs(opts.StrictClaudeSettings, opts.ManagedBridgeJSON)...)
 	}
 	cmd.Env = spec.env(sess.Name, shimDir, home, mock.BaseURL())
 	if sess.Managed != nil {

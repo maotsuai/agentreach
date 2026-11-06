@@ -71,6 +71,13 @@ func TestTransportFirstGuardFailureRetiresExistingServer(t *testing.T) {
 	if err := sess.Save(); err != nil {
 		t.Fatal(err)
 	}
+	p, e := sess.Policy(func(context.Context) error { return nil })
+	if e != nil {
+		t.Fatal(e)
+	}
+	if e = p.Init(context.Background()); e != nil {
+		t.Fatal(e)
+	}
 	var remaining, checks atomic.Int32
 	check := func(context.Context) error {
 		checks.Add(1)
@@ -108,9 +115,10 @@ func TestTransportFirstGuardFailureRetiresExistingServer(t *testing.T) {
 	}
 	startCanary := filepath.Join(root, "forbidden-start")
 	beforeChecks := checks.Load()
-	remaining.Store(2)
+	// runtimeReady, durable-intent guard, then the transport's own guard.
+	remaining.Store(3)
 	f := client.call(t, "process/start", execParams{ProcessID: "rejected", Argv: []string{"sh", "-c", "touch " + transport.ShellQuote(startCanary)}, Cwd: pathToURI(root)})
-	if f.Error == nil || !strings.Contains(f.Error.Message, "transport-only failure") || checks.Load()-beforeChecks != 2 {
+	if f.Error == nil || !strings.Contains(f.Error.Message, "transport-only failure") || checks.Load()-beforeChecks != 3 {
 		t.Fatalf("inner check did not fail: %+v checks=%d", f.Error, checks.Load()-beforeChecks)
 	}
 	// The injected condition has recovered. No old server entry may reach it.
@@ -255,17 +263,17 @@ func TestProcessWriteAndStatusRecheckRuntime(t *testing.T) {
 	e.srv.processes = map[string]*process{}
 }
 func TestManagedTTYAndSignalsAreExplicitlyUnsupported(t *testing.T) {
-	e := newTestEnv(t)
-	e.srv.sess.Managed = &session.Managed{ProjectID: "test"}
-	e.srv.checkRuntime = func(context.Context) error { return nil }
-	raw, _ := json.Marshal(execParams{ProcessID: "tty", Argv: []string{"bash"}, Cwd: pathToURI(e.root), Tty: true})
-	if _, err := e.srv.handleProcessStart(context.Background(), raw); err == nil || !strings.Contains(err.Message, "tty") {
+	// These entrypoint rejections precede runtime/transport setup. Construct
+	// immutable managed state before any Serve goroutine instead of mutating
+	// the session of an already-running unmanaged fixture.
+	srv := &Server{sess: &session.Session{Managed: &session.Managed{ProjectID: "test"}}}
+	raw, _ := json.Marshal(execParams{ProcessID: "tty", Argv: []string{"bash"}, Cwd: "file:///workspace/test", Tty: true})
+	if _, err := srv.handleProcessStart(context.Background(), raw); err == nil || !strings.Contains(err.Message, "tty") {
 		t.Fatal("pretended to provide a PTY")
 	}
-	if _, err := e.srv.handleProcessSignal([]byte(`{"processId":"x","signal":"SIGINT"}`)); err == nil {
+	if _, err := srv.handleProcessSignal([]byte(`{"processId":"x","signal":"SIGINT"}`)); err == nil {
 		t.Fatal("pretended to deliver a Guest signal")
 	}
-	e.srv.sess.Managed = nil
 }
 
 var _ io.WriteCloser = (*writeSpy)(nil)
@@ -363,6 +371,13 @@ func TestManagedRPCUsesGuestNamespaceAfterProtocolMapping(t *testing.T) {
 			if e = sess.Save(); e != nil {
 				t.Fatal(e)
 			}
+			p, e := sess.Policy(func(context.Context) error { return nil })
+			if e != nil {
+				t.Fatal(e)
+			}
+			if e = p.Init(context.Background()); e != nil {
+				t.Fatal(e)
+			}
 			hostCwd := filepath.Join(base, "harness-cwd")
 			if e = os.Mkdir(hostCwd, 0700); e != nil {
 				t.Fatal(e)
@@ -439,6 +454,7 @@ func TestManagedRPCUsesGuestNamespaceAfterProtocolMapping(t *testing.T) {
 				return f
 			}
 			call("initialize", map[string]any{"clientName": "overlap"})
+			testFixedHostCallback(t, srv, sess, dispatches)
 			intended := func(name string) string { return filepath.Join(guestRoot, prefix+name) }
 			unrelated := func(name string) string { return filepath.Join(guestRoot, wrongPrefix+name) }
 			uri := func(name string) string { return pathToURI(filepath.Join(hostAlias, prefix+name)) }
@@ -615,7 +631,7 @@ func TestManagedRPCUsesGuestNamespaceAfterProtocolMapping(t *testing.T) {
 			}
 			seed(unrelated("parallel-0"), "unrelated-old")
 			seed(unrelated("parallel-1"), "unrelated-old")
-			payload := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte("x"), 128<<10))
+			payload := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte("x"), 16<<10))
 			first := client.send(t, "fs/writeFile", fsWriteFileParams{Path: uri("parallel-0"), DataBase64: payload})
 			select {
 			case <-held:
@@ -633,7 +649,7 @@ func TestManagedRPCUsesGuestNamespaceAfterProtocolMapping(t *testing.T) {
 			for n := 0; n < 2; n++ {
 				name := fmt.Sprintf("parallel-%d", n)
 				data, e := os.ReadFile(intended(name))
-				if e != nil || len(data) != 128<<10 {
+				if e != nil || len(data) != 16<<10 {
 					t.Fatalf("pooled write target %s: %d %v", name, len(data), e)
 				}
 				check(unrelated(name), "unrelated-old")

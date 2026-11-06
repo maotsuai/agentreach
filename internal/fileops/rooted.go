@@ -63,7 +63,7 @@ func (c *rootConfig) validate(h map[string]any) error {
 
 // NewRooted takes its path namespace from the trusted entrypoint. It never builds,
 // installs, probes another tier or falls back to a shell.
-func NewRooted(ctx context.Context, t transport.Transport, m workspace.Mapper, namespace workspace.Namespace, digest string, binding *RootBinding) (FileOps, error) {
+func NewRooted(ctx context.Context, t transport.Transport, m workspace.Mapper, namespace workspace.Namespace, digest string, binding *RootBinding, effects ...Effect) (FileOps, error) {
 	if namespace != workspace.Guest && namespace != workspace.Protocol {
 		return nil, fmt.Errorf("path_denied: rooted FileOps requires an explicit trusted path namespace")
 	}
@@ -89,13 +89,28 @@ func NewRooted(ctx context.Context, t transport.Transport, m workspace.Mapper, n
 		_ = p.Close()
 		return nil, fmt.Errorf("unsupported: managed rooted helper unavailable; explicitly prepare %s: %w", rooted.HelperPath, e)
 	}
-	return &rootedOps{handlerOps: p, mapper: m, namespace: namespace}, nil
+	r := &rootedOps{handlerOps: p, mapper: m, namespace: namespace}
+	if len(effects) > 0 {
+		r.effect = effects[0]
+	}
+	return r, nil
 }
+
+// Effect commits authorization/intent before the supplied Guest mutation.
+type Effect func(context.Context, string, any, func() error) error
 
 type rootedOps struct {
 	*handlerOps
 	mapper    workspace.Mapper
 	namespace workspace.Namespace
+	effect    Effect
+}
+
+func (p *rootedOps) change(c context.Context, op string, payload any, fn func() error) error {
+	if p.effect != nil {
+		return p.effect(c, op, payload, fn)
+	}
+	return fn()
 }
 
 func (p *rootedOps) paths(op, a, b string) (workspace.Result, error) {
@@ -127,7 +142,7 @@ func (p *rootedOps) Write(c context.Context, a string, b []byte, m fs.FileMode) 
 	if e != nil {
 		return e
 	}
-	return p.handlerOps.Write(c, r.Relative, b, m)
+	return p.change(c, "write", []any{r.Guest, b, m}, func() error { return p.handlerOps.Write(c, r.Relative, b, m) })
 }
 func (p *rootedOps) Stat(c context.Context, a string) (*reach.FileInfo, error) {
 	r, e := p.paths("stat", a, "")
@@ -148,21 +163,21 @@ func (p *rootedOps) Mkdir(c context.Context, a string, m fs.FileMode) error {
 	if e != nil {
 		return e
 	}
-	return p.handlerOps.Mkdir(c, r.Relative, m)
+	return p.change(c, "mkdir", []any{r.Guest, m}, func() error { return p.handlerOps.Mkdir(c, r.Relative, m) })
 }
 func (p *rootedOps) Remove(c context.Context, a string, b bool) error {
 	r, e := p.paths("remove", a, "")
 	if e != nil {
 		return e
 	}
-	return p.handlerOps.Remove(c, r.Relative, b)
+	return p.change(c, "remove", []any{r.Guest, b}, func() error { return p.handlerOps.Remove(c, r.Relative, b) })
 }
 func (p *rootedOps) Rename(c context.Context, a, b string) error {
 	r, e := p.paths("rename", a, b)
 	if e != nil {
 		return e
 	}
-	return p.handlerOps.Rename(c, r.Relative, r.SecondRelative)
+	return p.change(c, "rename", []any{r.Guest, r.SecondGuest}, func() error { return p.handlerOps.Rename(c, r.Relative, r.SecondRelative) })
 }
 func (p *rootedOps) Hash(c context.Context, a string) (string, error) {
 	r, e := p.paths("hash", a, "")
@@ -223,8 +238,10 @@ func (p *rootedOps) Copy(c context.Context, a, b string, recursive bool) error {
 	if e != nil {
 		return e
 	}
-	_, _, e = p.roundTrip(c, map[string]any{"op": "copy", "from": r.Relative, "to": r.SecondRelative, "recursive": recursive}, nil)
-	return e
+	return p.change(c, "copy", []any{r.Guest, r.SecondGuest, recursive}, func() error {
+		_, _, e = p.roundTrip(c, map[string]any{"op": "copy", "from": r.Relative, "to": r.SecondRelative, "recursive": recursive}, nil)
+		return e
+	})
 }
 
 // ExtendedOps covers operations which legacy FileOps implements through shell tools.

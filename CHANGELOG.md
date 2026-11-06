@@ -11,6 +11,12 @@ project makes without a version attached.
 
 ## [Unreleased]
 
+- Managed P2: explicit policy bootstrap, atomic approval/intent ledger, mandatory
+  Guest exec/process/stdin/file mutation audit, and a fixed three-tool Host MCP
+  bridge for Claude/Codex. Exact approvals, monotonic TTL, revocation and failure
+  semantics are described in [POLICY.md](docs/POLICY.md); production exposure and
+  port/service/runtime drivers remain P4/P5 work.
+
 ### Added
 
 - Managed OrbStack P1 Workspace/PathMapper: required explicitly prepared rooted

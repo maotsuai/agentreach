@@ -10,6 +10,13 @@ component ancestors or descendants of the Guest root; equality is allowed.
 Ambiguity returns `path_denied` before dispatch without migrating or rebinding
 records. The managed profile refuses local filesystem/configuration overrides.
 
+Managed P2 keeps `include_local=false`. Codex 0.148.0 local stdio MCP requires
+a local executor, so the fixed MCP server selects `reach`: only its exact trusted
+binary/argv/cwd/env binding enters an in-process Host MCP handler. Ordinary argv
+still starts in the Guest. MCP JSON lines bypass the Shell sentinel tail buffer.
+The three fixed tools use reach policy for approval; operator approve/revoke
+remain unavailable to models. See [POLICY.md](../POLICY.md).
+
 ## The finding that shapes everything
 
 The original 0.148.0 wire probe advertised `exec_command`, `write_stdin` and

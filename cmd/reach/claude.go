@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 
 	"github.com/bojieli/agentreach/internal/harnessprobe"
+	"github.com/bojieli/agentreach/internal/host"
 	"github.com/bojieli/agentreach/internal/session"
 	"github.com/bojieli/agentreach/internal/transport"
 )
@@ -136,7 +137,17 @@ func cmdClaude(ctx context.Context, args []string) int {
 	argv := []string{claudePath}
 	switch {
 	case s.Managed != nil:
-		argv = append(argv, strictClaudeArgs(strictSettings)...)
+		path, e := managedSafePath(s)
+		if e != nil {
+			fmt.Fprintln(os.Stderr, e)
+			return 1
+		}
+		bridge, _, e := host.Configuration(s, path)
+		if e != nil {
+			fmt.Fprintln(os.Stderr, e)
+			return 1
+		}
+		argv = append(argv, strictClaudeArgs(strictSettings, bridge)...)
 		argv = append(argv, "--append-system-prompt", execModeGuidance)
 	case s.Mode == session.ModeMirror:
 		settings, err := writeMirrorSettings(sessName)

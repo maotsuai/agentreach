@@ -9,6 +9,7 @@ import (
 
 	"github.com/bojieli/agentreach/internal/execserver"
 	"github.com/bojieli/agentreach/internal/harnessprobe"
+	"github.com/bojieli/agentreach/internal/host"
 	"github.com/bojieli/agentreach/internal/session"
 )
 
@@ -177,7 +178,15 @@ func managedCodexHome(sessName string) (string, error) {
 	files := []string{"auth.json", "config.toml"}
 	if s.Managed != nil {
 		files = []string{"auth.json"}
-		if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte("# Controlled managed project configuration.\n"), 0o600); err != nil {
+		path, e := managedSafePath(s)
+		if e != nil {
+			return "", e
+		}
+		_, config, e := host.Configuration(s, path)
+		if e != nil {
+			return "", e
+		}
+		if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(config), 0o600); err != nil {
 			return "", err
 		}
 	}

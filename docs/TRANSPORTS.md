@@ -26,6 +26,12 @@ The key guarantee: **tier 0 works on any host running stock `sshd` and requires 
 rule the set is chosen by, not an accident of which protocols were available —
 see [Why there is no SFTP tier](#why-there-is-no-sftp-tier).
 
+Managed P2 authorizes and journals user exec/process/stdin and rooted file
+mutations above these transport mechanisms. Fixed negotiation and reads do not
+recursively journal their control traffic. Managed inbound/canonical requests
+are capped at 64 KiB including encoding overhead; the unmanaged tier budgets
+below retain their own contracts. See [POLICY.md](POLICY.md).
+
 ## What they actually cost
 
 Measured twice, because the first measurement was taken in the wrong place.

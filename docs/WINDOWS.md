@@ -4,6 +4,11 @@ AgentReach runs on Windows as the machine you sit at: the agent and `reach` live
 
 This document records what differs from the Linux/macOS path, what is verified and how, and what is not yet verified.
 
+Managed P2 currently requires the native Darwin or Linux boot-bound clock and
+private ledger checks. Windows cross-builds remain supported, but native Windows
+managed policy execution is unsupported; this does not change legacy Windows
+transports. See [POLICY.md](POLICY.md).
+
 ## What differs from Unix, and why
 
 Harness process and local-shell differences live in `cmd/reach/platform_windows.go`

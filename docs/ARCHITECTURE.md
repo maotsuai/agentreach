@@ -12,6 +12,13 @@ contract in [MANAGED-PROJECTS.md](MANAGED-PROJECTS.md). Managed projects explici
 prepare a required rooted helper; its protocol and limits differ from the
 optional interchangeable tiers and managed mirror mode is refused.
 
+Managed P2 adds one authoritative per-project ledger in `internal/policy`, fixed
+capability executors in `internal/host`, and narrow harness adapters. Approval
+consumption and intent are one atomic replacement; user effects dispatch only
+after it is durable. The optional legacy log remains separate. The fixed MCP
+bridge changes only the managed Host capability surface; ordinary tools keep
+their Guest routes. See [POLICY.md](POLICY.md).
+
 ## Problem
 
 Coding agents assume their tools act on the machine they run on. Three

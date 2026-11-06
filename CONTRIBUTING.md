@@ -1,5 +1,11 @@
 # Contributing to AgentReach
 
+Managed P2 changes must preserve durable intent before every user effect and
+atomic approval consumption. Validate write/fsync/corruption/clock/concurrency
+failures and real Claude/Codex fixed-MCP calls together with ordinary Guest
+Bash/fs/native patch. See [POLICY.md](docs/POLICY.md) and the phase verification
+record; run Go tooling only in the approved Linux development Guest.
+
 ## Before you start
 
 AgentReach hooks undocumented implementation details in closed binaries. That shapes everything about how this project works and what it asks of contributors.
