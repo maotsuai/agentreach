@@ -65,6 +65,7 @@ type Mock struct {
 	// command, when set, overrides the default "echo <marker>; hostname"
 	// probe command. SetCommand sets it after construction.
 	command string
+	cwd     string
 	patch   string
 
 	mu         sync.Mutex
@@ -142,6 +143,9 @@ func (m *Mock) SetCommand(cmd string) { m.command = cmd }
 // approximation. Configure before starting the real harness. This is used by
 // the offline managed-launch conformance helper, never to rewrite commands.
 func (m *Mock) SetPatch(patch string) { m.patch = patch }
+
+// SetCwd sets the shell tool workdir for conformance. Configure before any requests.
+func (m *Mock) SetCwd(cwd string) { m.cwd = cwd }
 
 // Result returns the tool output the harness reported, and whether any tool
 // output was observed at all.
@@ -340,10 +344,18 @@ func (m *Mock) pickTool(tools []toolSpec) (name string, arguments string) {
 		args func(string) map[string]any
 	}{
 		{"exec_command", func(c string) map[string]any {
-			return map[string]any{"cmd": c, "yield_time_ms": 1000, "max_output_tokens": 4000}
+			a := map[string]any{"cmd": c, "yield_time_ms": 1000, "max_output_tokens": 4000}
+			if m.cwd != "" {
+				a["workdir"] = m.cwd
+			}
+			return a
 		}},
 		{"shell_command", func(c string) map[string]any {
-			return map[string]any{"command": c}
+			a := map[string]any{"command": c}
+			if m.cwd != "" {
+				a["workdir"] = m.cwd
+			}
+			return a
 		}},
 		{"shell", func(c string) map[string]any {
 			return map[string]any{"command": c}

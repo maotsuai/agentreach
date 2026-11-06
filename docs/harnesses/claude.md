@@ -4,6 +4,16 @@
 reach's shell seam, so it runs on the session's remote target instead of the
 local machine.
 
+For managed OrbStack projects, the [managed contract](../MANAGED-PROJECTS.md)
+overrides the general unmanaged behavior below: strict controlled Bash-only
+settings, a required explicitly prepared rooted helper, no mirror/local-file
+opt-out, and only the exact typed Host hook callback. `CLAUDE_PROJECT_DIR` alone
+never authorizes a Host command. Host project/control-cwd aliases and the Guest
+root may be equal but cannot be strictly nested by path components; ambiguity
+returns `path_denied` before dispatch, without migration or rebind. Actual cwd
+is reported intact and validated before Host bookkeeping. Managed validation
+uses Claude Code 2.1.220; see [P1 evidence](../validation/P1.md).
+
 ## Shell seam: `CLAUDE_CODE_SHELL_PREFIX`
 
 Claude Code (v0.2+) supports a first-class intercept mechanism:
@@ -31,7 +41,7 @@ tunnel.
 
 This seam is robust: even if Claude Code resolves its shell by absolute path
 (e.g. from `/etc/passwd`) rather than walking PATH, the prefix hook fires first.
-PATH shim harnesses (Codex, Gemini, Goose) share a vulnerability to changes in
+PATH-shim adapters share a vulnerability to changes in
 how the harness resolves its shell — the `CLAUDE_CODE_SHELL_PREFIX` mechanism is
 immune to that class of regression.
 

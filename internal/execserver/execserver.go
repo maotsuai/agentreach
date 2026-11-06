@@ -34,6 +34,7 @@ import (
 	"github.com/bojieli/agentreach/internal/reach"
 	"github.com/bojieli/agentreach/internal/session"
 	"github.com/bojieli/agentreach/internal/transport"
+	workspacepath "github.com/bojieli/agentreach/internal/workspace"
 )
 
 // maxFileHandlers is how many file-operation strategies one exec-server keeps.
@@ -106,6 +107,7 @@ type Server struct {
 	ops                fileops.FileOps
 	workspace          string // the local directory codex was launched in
 	workspaceCanonical string // Host symlink spelling Codex may send (e.g. /private/var)
+	mapper             *workspacepath.Mapper
 	root               string // the session's root on the target
 
 	shellName string
@@ -163,8 +165,9 @@ func (s *Server) terminateAll() {
 }
 
 // New builds an exec-server for sess. workspace is the local directory codex
-// was launched in; paths under it are mapped onto the session's root on the
-// target, and every other absolute path is treated as a target path verbatim.
+// was launched in. Managed Host aliases are validated before any Guest dispatch;
+// mapped paths then enter FileOps in the fixed Guest namespace. Unmanaged
+// sessions retain their legacy absolute-path behaviour.
 //
 // The target's shell is probed eagerly: codex asks for it in environment/info
 // and builds every command with it, and a target without a POSIX shell is
@@ -176,12 +179,38 @@ func New(ctx context.Context, sess *session.Session, workspace string) (*Server,
 
 func newServer(ctx context.Context, sess *session.Session, workspace string, check func(context.Context) error) (*Server, error) {
 	srv := &Server{sess: sess, checkRuntime: check, processes: map[string]*process{}, handles: map[string]string{}, order: newSequencer()}
+
+	if workspace == "" {
+		var e error
+		workspace, e = os.Getwd()
+		if e != nil && sess.Managed != nil {
+			return nil, fmt.Errorf("path_denied: resolve trusted harness cwd: %w", e)
+		}
+	}
+	canonicalWorkspace, canonicalErr := filepath.EvalSymlinks(workspace)
+	srv.workspace = filepath.Clean(workspace)
+	srv.workspaceCanonical = canonicalWorkspace
+	srv.root = sess.Target.Workspace
+	if sess.Managed != nil {
+		if canonicalErr != nil {
+			return nil, fmt.Errorf("path_denied: resolve trusted harness cwd: %w", canonicalErr)
+		}
+		m, e := sess.PathMapper()
+		if e != nil {
+			return nil, e
+		}
+		m.HostAliases = append(m.HostAliases, srv.workspace, canonicalWorkspace)
+		if e = m.ValidateProtocolAliases(); e != nil {
+			return nil, e
+		}
+		srv.mapper = &m
+	}
 	t, err := sess.TransportGuard(srv.runtimeReady)
 	if err != nil {
 		return nil, err
 	}
 	srv.t = t
-	sel, err := sess.FileOpsGuard(ctx, t, srv.runtimeReady)
+	sel, err := sess.FileOpsGuard(ctx, t, workspacepath.Guest, srv.runtimeReady)
 	if err != nil {
 		if sess.Managed != nil {
 			_ = t.Close()
@@ -192,7 +221,7 @@ func newServer(ctx context.Context, sess *session.Session, workspace string, che
 	// at a time, so a large read would hold every other file operation behind
 	// it. Further handlers are started only when operations actually overlap.
 	ops := fileops.NewPool(sel.Ops, maxFileHandlers, func(ctx context.Context) (fileops.FileOps, error) {
-		more, err := sess.FileOpsGuard(ctx, t, srv.runtimeReady)
+		more, err := sess.FileOpsGuard(ctx, t, workspacepath.Guest, srv.runtimeReady)
 		if err != nil {
 			return nil, err
 		}
@@ -207,13 +236,6 @@ func newServer(ctx context.Context, sess *session.Session, workspace string, che
 		}
 		return nil, err
 	}
-	if workspace == "" {
-		workspace, _ = os.Getwd()
-	}
-	canonicalWorkspace, _ := filepath.EvalSymlinks(workspace)
-	srv.workspace = filepath.Clean(workspace)
-	srv.workspaceCanonical = canonicalWorkspace
-	srv.root = sess.Target.Workspace
 	srv.shellName = name
 	srv.shellPath = shellPath
 	srv.sessionID = "reach-" + randomHex(8)
@@ -563,6 +585,13 @@ func (s *Server) mapPath(p string) string {
 
 // mapURI decodes a PathUri and maps it onto the target in one step.
 func (s *Server) mapURI(uri string) (string, *rpcError) {
+	if s.mapper != nil {
+		r, e := s.mapper.Map(workspacepath.PathRequest{Operation: "protocol", Namespace: workspacepath.FileURI, Path: uri})
+		if e != nil {
+			return "", invalidParams("%v", e)
+		}
+		return r.Guest, nil
+	}
 	p, err := uriToPath(uri)
 	if err != nil {
 		return "", err

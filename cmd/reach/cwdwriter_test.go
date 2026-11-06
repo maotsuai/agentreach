@@ -74,3 +74,12 @@ func TestCwdWriterNeverLeaksMarker(t *testing.T) {
 		t.Errorf("reach bookkeeping leaked into the agent's stderr: %q", buf.String())
 	}
 }
+
+func TestManagedCwdPreservesTrailingSpace(t *testing.T) {
+	var out bytes.Buffer
+	w := &cwdCapturingWriter{out: &out, marker: "marker", preserveSpace: true}
+	_, _ = w.Write([]byte("marker/workspace/子 dir \n"))
+	if got := w.Captured(); got != "/workspace/子 dir " {
+		t.Fatalf("changed cwd %q", got)
+	}
+}

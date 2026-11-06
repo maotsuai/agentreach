@@ -14,10 +14,11 @@ import (
 // to it would corrupt the very content the agent asked for. stderr is already
 // diagnostic, and the marker line is stripped before the agent sees it.
 type cwdCapturingWriter struct {
-	out      io.Writer
-	marker   string
-	pending  bytes.Buffer
-	captured string
+	out           io.Writer
+	marker        string
+	pending       bytes.Buffer
+	captured      string
+	preserveSpace bool
 }
 
 func (w *cwdCapturingWriter) Write(p []byte) (int, error) {
@@ -53,6 +54,9 @@ func (w *cwdCapturingWriter) consumeLine(line string) (bool, error) {
 		return false, err
 	}
 	w.captured = strings.TrimSpace(strings.TrimRight(line[idx+len(w.marker):], "\r\n"))
+	if w.preserveSpace {
+		w.captured = strings.TrimSuffix(line[idx+len(w.marker):], "\n")
+	}
 	if idx > 0 {
 		// Preserve whatever the command wrote before the marker.
 		if _, err := w.out.Write([]byte(line[:idx])); err != nil {

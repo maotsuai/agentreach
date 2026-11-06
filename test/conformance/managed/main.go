@@ -35,11 +35,11 @@ func run() error {
 	projectID := flag.String("project", "", "registered managed test project")
 	harness := flag.String("harness", "", "codex or claude")
 	binary := flag.String("binary", "", "absolute real harness binary")
-	mode := flag.String("mode", "shell", "shell or patch (Codex native custom tool)")
+	mode := flag.String("mode", "shell", "shell, shell-cwd-race, patch, patch-update, patch-delete, patch-move, patch-outside or patch-move-outside")
 	guestCwd := flag.String("guest-cwd", "", "expected Guest cwd for the shell case (default project workspace)")
 	flag.Parse()
-	if !filepath.IsAbs(*reachPath) || !filepath.IsAbs(*binary) || *projectID == "" || *harness != "codex" && *harness != "claude" || *mode != "shell" && (*mode != "patch" || *harness != "codex") {
-		return fmt.Errorf("require absolute --reach/--binary, --project, --harness codex|claude and --mode shell|patch")
+	if !filepath.IsAbs(*reachPath) || !filepath.IsAbs(*binary) || *projectID == "" || *harness != "codex" && *harness != "claude" || !validMode(*mode, *harness) {
+		return fmt.Errorf("require absolute --reach/--binary, --project, --harness codex|claude and a supported --mode")
 	}
 	stateHome := os.Getenv("REACH_HOME")
 	if !filepath.IsAbs(stateHome) {
@@ -76,19 +76,23 @@ func run() error {
 		return err
 	}
 	marker := "REACH_LAUNCH_" + hex.EncodeToString(nonce[:])
-	file := "/tmp/agentreach-" + strings.ToLower(marker)
-	content := marker + "\n"
+	testCase := launchCase(*mode, r.Spec.Workspace.GuestPath, *guestCwd, marker)
+	if testCase.violation != "" {
+		fmt.Printf("guest_body_violation_canary=%s\n", testCase.violation)
+	}
 	dialect := harnessprobe.DialectResponses
 	if *harness == "claude" {
 		dialect = harnessprobe.DialectAnthropic
 	}
 	mock := harnessprobe.StartMock(marker, dialect)
 	defer mock.Close()
-	if *mode == "patch" {
-		file = filepath.Join(r.Spec.Workspace.GuestPath, strings.ToLower(marker)+".txt")
-		mock.SetPatch("*** Begin Patch\n*** Add File: " + filepath.Base(file) + "\n+" + marker + "\n*** End Patch\n")
+	if testCase.patch != "" {
+		mock.SetPatch(testCase.patch)
 	} else {
-		mock.SetCommand("test -z \"${REACH_HOST_ONLY_CANARY+x}\" && test \"$(pwd -P)\" = " + transport.ShellQuote(*guestCwd) + " && printf '%s\\n' " + marker + " > " + transport.ShellQuote(file) + " && cat " + transport.ShellQuote(file) + " && hostname")
+		mock.SetCommand(testCase.command)
+		if *mode == "shell-cwd-race" && *harness == "codex" {
+			mock.SetCwd(*guestCwd)
+		}
 	}
 	// The inherited environment and real auth/config are deliberately absent.
 	// ControlHome comes from the approved project, not this temporary HOME.
@@ -126,6 +130,13 @@ func run() error {
 		args = append(args, "--print", "--no-session-persistence", "--model", "reach-mock")
 	}
 	args = append(args, "Follow the tool-call instructions exactly.")
+	if testCase.setup != "" {
+		setup := exec.CommandContext(ctx, *reachPath, "--project", *projectID, "exec", "--", testCase.setup)
+		setup.Dir, setup.Env = home, env
+		if output, err := setup.CombinedOutput(); err != nil {
+			return fmt.Errorf("prepare Guest patch fixture: %w: %s", err, output)
+		}
+	}
 	cmd := exec.CommandContext(ctx, *reachPath, args...)
 	cmd.Dir, cmd.Env = home, env
 	output, runErr := cmd.CombinedOutput()
@@ -138,26 +149,39 @@ func run() error {
 	if !observed {
 		return fmt.Errorf("actual launcher never returned the scripted tool output")
 	}
-	if *mode == "shell" && !strings.Contains(result, marker+"\n") || *mode == "patch" && !strings.Contains(result, "Success. Updated the following files:") {
-		return fmt.Errorf("scripted tool did not succeed")
+	if !strings.Contains(result, testCase.wantResult) {
+		return fmt.Errorf("scripted tool result does not contain %q", testCase.wantResult)
+	}
+	if testCase.wantFailure && !strings.Contains(result, "Exit code: 1") {
+		return fmt.Errorf("scripted negative tool case did not report failure")
 	}
 	// Independently read through the registered project's real CLI entrypoint.
-	read := exec.CommandContext(ctx, *reachPath, "--project", *projectID, "exec", "--", "cat "+transport.ShellQuote(file))
+	read := exec.CommandContext(ctx, *reachPath, "--project", *projectID, "exec", "--", testCase.verify)
+	if testCase.readPath != "" {
+		// The raced directory instance can be renamed after safe acquisition.
+		// FileOps readback stays rooted without reopening that mutable cwd.
+		read = exec.CommandContext(ctx, *reachPath, "--project", *projectID, "fs", "read", testCase.readPath)
+	}
 	read.Dir, read.Env = home, env
 	data, err := read.Output()
 	if err != nil {
 		return fmt.Errorf("Guest readback failed: %w", err)
 	}
-	if string(data) != content {
+	if string(data) != testCase.content {
 		return fmt.Errorf("Guest readback mismatch: %q", data)
 	}
-	if _, err := os.Lstat(file); !os.IsNotExist(err) {
-		if err != nil {
-			return fmt.Errorf("inspect Host canary %s: %w", file, err)
+	for _, file := range testCase.hostAbsent {
+		if r.Spec.Workspace.Mode == "shared-project" && approvedSharedProjection(r.Spec.Workspace.HostPath, r.Spec.Workspace.GuestPath, file) {
+			continue
 		}
-		return fmt.Errorf("Host canary path unexpectedly exists: %s", file)
+		if _, err := os.Lstat(file); !os.IsNotExist(err) {
+			if err != nil {
+				return fmt.Errorf("inspect Host canary %s: %w", file, err)
+			}
+			return fmt.Errorf("Host canary path unexpectedly exists: %s", file)
+		}
 	}
-	if *mode == "patch" {
+	if testCase.patch != "" {
 		sessions, broken, err := session.List()
 		if err != nil {
 			return fmt.Errorf("cannot inspect isolated Host sessions: %w", err)
@@ -168,9 +192,11 @@ func run() error {
 		checked := false
 		for _, s := range sessions {
 			if s.Managed != nil && s.Managed.ProjectID == *projectID {
-				hostFile := filepath.Join(stateHome, "codex-home", s.Name, filepath.Base(file))
-				if _, err := os.Lstat(hostFile); !os.IsNotExist(err) {
-					return fmt.Errorf("native patch reached its Host control cwd or that path is unreadable: %s", hostFile)
+				for _, name := range testCase.controlAbsent {
+					hostFile := filepath.Join(stateHome, "codex-home", s.Name, name)
+					if _, err := os.Lstat(hostFile); !os.IsNotExist(err) {
+						return fmt.Errorf("native patch reached its Host control cwd or that path is unreadable: %s", hostFile)
+					}
 				}
 				checked = true
 			}
@@ -180,6 +206,6 @@ func run() error {
 		}
 		fmt.Println("host_control_cwd_canary_absent=true")
 	}
-	fmt.Printf("PASS actual_launcher=true guest_canary=%s host_canary_absent=true\n", file)
+	fmt.Printf("PASS actual_launcher=true mode=%s unapproved_host_canaries_absent=true\n", *mode)
 	return nil
 }

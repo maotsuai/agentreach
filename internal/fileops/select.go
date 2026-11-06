@@ -8,13 +8,11 @@ import (
 	"github.com/bojieli/agentreach/internal/transport"
 )
 
-// Warner receives a human-readable note about a degradation that happened.
+// Warner receives a human-readable note about an unmanaged tier degradation.
 //
-// Degradation is the right behaviour — a host that cannot do tier 2 should
-// still work — but an invisible degradation is not. The operator finds out that
-// file operations quietly got ten times slower by noticing their agent feels
-// sluggish, which is exactly the class of failure this project refuses
-// elsewhere. Every fallback goes through here so it can be printed.
+// An unpinned unmanaged session may fall back to a lower tier, and every such
+// fallback is reported through this callback. Managed sessions use NewRooted
+// instead and never negotiate or fall back between tiers.
 type Warner func(string)
 
 // Selection records what a tier request actually produced.
@@ -33,14 +31,15 @@ type Selection struct {
 // Degraded reports whether the effective tier is below the requested one.
 func (s Selection) Degraded() bool { return s.Effective < s.Requested }
 
-// New builds the file-operation strategy for a tier.
+// New builds an unmanaged file-operation strategy for a tier.
 //
 // pinned separates an operator's explicit --fileops choice from
 // autonegotiation's own. A pinned tier that cannot be built is an error: giving
 // an operator something other than what they asked for, while reporting the
 // tier they asked for, is precisely the silent wrong-behaviour this project
 // exists to make impossible. An autonegotiated tier steps down to the next one
-// that works and reports it through warn.
+// that works and reports it through warn. Managed callers must use NewRooted
+// with an explicitly prepared rooted helper instead of this negotiation path.
 func New(ctx context.Context, tier reach.Tier, t transport.Transport, caps *Capabilities, pinned bool, warn Warner) (Selection, error) {
 	if caps == nil {
 		return Selection{}, fmt.Errorf("file operations need a capability probe; run `reach up` again to refresh this session")

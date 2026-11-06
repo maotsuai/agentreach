@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"flag"
 	"fmt"
@@ -13,8 +14,10 @@ import (
 
 	"github.com/bojieli/agentreach/internal/envelope"
 	"github.com/bojieli/agentreach/internal/reach"
+	"github.com/bojieli/agentreach/internal/rooted"
 	"github.com/bojieli/agentreach/internal/session"
 	"github.com/bojieli/agentreach/internal/transport"
+	"github.com/bojieli/agentreach/internal/workspace"
 )
 
 // exitTransportFailure is returned when reach could not run the command at
@@ -179,6 +182,14 @@ func runOnSession(ctx context.Context, s *session.Session, command, cwdFile stri
 	// master, and this process runs once per tool call. Reuse across calls is
 	// the entire performance story.
 
+	if s.Managed != nil {
+		sel, e := s.FileOpsGuard(ctx, t, workspace.Guest, s.CheckManaged)
+		if e != nil {
+			fmt.Fprintln(os.Stderr, "reach:", e)
+			return exitTransportFailure
+		}
+		_ = sel.Ops.Close()
+	}
 	cwd := s.Cwd()
 	original := command
 
@@ -186,12 +197,17 @@ func runOnSession(ctx context.Context, s *session.Session, command, cwdFile stri
 	// harness tracks `cd` between calls by reading a local file, so reach has
 	// to know where the command ended up regardless of whether the harness
 	// asked for it.
-	const cwdMarker = "__reach_cwd__"
-	command = fmt.Sprintf("%s\n__reach_rc=$?; printf '%s%%s\\n' \"$(pwd -P)\" >&2; exit $__reach_rc", command, cwdMarker)
+	cwdMarker := "__reach_cwd__"
+	if s.Managed != nil {
+		cwdMarker = "__reach_cwd_b64__"
+		command = fmt.Sprintf("%s\n__reach_rc=$?; %s report-cwd %s || exit 125; exit $__reach_rc", command, transport.ShellQuote(rooted.HelperPath), transport.ShellQuote(cwdMarker))
+	} else {
+		command = fmt.Sprintf("%s\n__reach_rc=$?; printf '%s%%s\\n' \"$(pwd -P)\" >&2; exit $__reach_rc", command, cwdMarker)
+	}
 
-	stderr := &cwdCapturingWriter{out: os.Stderr, marker: cwdMarker}
+	stderr := &cwdCapturingWriter{out: os.Stderr, marker: cwdMarker, preserveSpace: s.Managed != nil}
 	started := time.Now()
-	code, err := transport.RunStream(ctx, t, reach.ExecRequest{
+	req := reach.ExecRequest{
 		Command: command,
 		Dir:     cwd,
 		Timeout: s.Timeout,
@@ -200,7 +216,18 @@ func runOnSession(ctx context.Context, s *session.Session, command, cwdFile stri
 		// ~/.cargo/bin is invisible to the agent, for no reason it could work
 		// out from the error.
 		Env: s.Caps.Env(),
-	}, os.Stdout, stderr)
+	}
+	if s.Managed != nil {
+		built, e := s.Command(req)
+		if e != nil {
+			fmt.Fprintln(os.Stderr, "reach:", e)
+			return exitTransportFailure
+		}
+		req.Command = built
+		req.Dir = ""
+		req.Env = nil
+	}
+	code, err := transport.RunStream(ctx, t, req, os.Stdout, stderr)
 
 	// Record it either way. A command that failed to reach the target is as
 	// much a part of the account as one that ran.
@@ -211,7 +238,16 @@ func runOnSession(ctx context.Context, s *session.Session, command, cwdFile stri
 		return exitTransportFailure
 	}
 
-	if newCwd := stderr.Captured(); newCwd != "" {
+	newCwd := stderr.Captured()
+	if s.Managed != nil && newCwd != "" {
+		data, e := base64.StdEncoding.DecodeString(newCwd)
+		if e != nil {
+			fmt.Fprintln(os.Stderr, "reach: invalid Guest cwd report:", e)
+			return exitTransportFailure
+		}
+		newCwd = string(data)
+	}
+	if newCwd != "" {
 		// Nothing else carries the working directory between tool calls: each
 		// one is its own process and its own connection. If this cannot be
 		// recorded, the agent's `cd` stops persisting and its next command runs
@@ -222,6 +258,9 @@ func runOnSession(ctx context.Context, s *session.Session, command, cwdFile stri
 				"reach: could not record the working directory %s: %v\n"+
 					"reach: later commands will keep running in %s until this is fixed\n",
 				newCwd, err, cwd)
+			if s.Managed != nil {
+				return exitTransportFailure
+			}
 		}
 		// Reproduce the harness's own bookkeeping on the local filesystem.
 		// Without this, `cd` silently stops persisting between tool calls.

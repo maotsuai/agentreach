@@ -23,9 +23,16 @@ of these properties is a vulnerability, not a bug:
 
 - **No credential reaches the target.** The agent, its API key or OAuth token,
   and its conversation stay on the operator's machine.
-- **Nothing is installed or written by default.** Only the `helper` tier writes
+- **Nothing is installed or written by default in unmanaged sessions.** Only the `helper` tier writes
   to a target, it is never selected automatically, and reaching it requires the
   operator to name it with `--fileops=helper`.
+- **Managed project file requests and command starting cwd stay under the
+  approved root.** A rooted Guest helper is explicitly prepared, never installed
+  by ordinary requests or replaced with an unconstrained fallback. Host aliases
+  and the Guest root may be equal but cannot strictly contain one another by
+  path components; ambiguous mappings must fail before dispatch. This does not
+  sandbox arbitrary Guest shell code. Existing records are not migrated or
+  rebound; see [managed paths](docs/MANAGED-PROJECTS.md#managed-paths-and-command-cwd).
 - **reach acts only on the paths it was asked to act on.** In particular, a path
   originating in content read from a target must not be able to escape the
   mirror root or reach an arbitrary local file.

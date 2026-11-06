@@ -68,6 +68,22 @@ one response at a time.
 [HOW-IT-WORKS.md](docs/HOW-IT-WORKS.md) walks a single tool call through the
 whole path, in figures.
 
+## Managed OrbStack projects
+
+For an existing OrbStack Docker container on macOS, `reach --project <id>`
+uses an explicitly registered runtime binding. Managed FileOps and command
+starting directories are constrained to the project root by a required,
+explicitly prepared Guest rooted helper; there is no tier or Host fallback.
+Guest shell commands retain ordinary Guest filesystem access.
+
+The registered Host project path and trusted harness cwd aliases must not
+strictly contain the Guest root, or be strictly contained by it. Exact equality
+is allowed. Ambiguous mappings return `path_denied` before dispatch; reach does
+not migrate or rebind existing projects. Use an independent Guest root such as
+`/workspace/project`. See [managed preparation and path rules](docs/MANAGED-PROJECTS.md#managed-paths-and-command-cwd)
+and the [P1 validation record](docs/validation/P1.md). The SSH/unmanaged tier and
+mirror defaults described below retain their existing behavior.
+
 ## What it looks like
 
 ```console
@@ -390,7 +406,7 @@ server lets whoever controls that server authenticate as you everywhere else you
 can reach, which is a much bigger blast radius than the session you thought you
 were opening. reach never enables it and there is no flag that does.
 
-Nothing is installed by default. Tier 0 needs a POSIX shell and writes nothing at
+In unmanaged sessions nothing is installed by default. Tier 0 needs a POSIX shell and writes nothing at
 all.
 
 The agent's shell snapshot gets stripped out of forwarded commands. Claude Code's
@@ -410,7 +426,7 @@ model is in [docs/SECURITY.md](docs/SECURITY.md).
 | [HOW-IT-WORKS.md](docs/HOW-IT-WORKS.md) | the implementation in figures, and what reach is deliberately not |
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | how the pieces fit, and which alternatives got thrown out |
 | [TRANSPORTS.md](docs/TRANSPORTS.md) | the three file-operation tiers, benchmarked on real links |
-| [MANAGED-PROJECTS.md](docs/MANAGED-PROJECTS.md) | strict registration, storage checks and fail-closed OrbStack projects |
+| [MANAGED-PROJECTS.md](docs/MANAGED-PROJECTS.md) | managed helper preparation, registration, path mapping and OrbStack checks |
 | [RESEARCH.md](docs/RESEARCH.md) | what each agent does internally, with transcripts |
 | [SECURITY.md](docs/SECURITY.md) | threat model, and what reach won't save you from |
 | [WINDOWS.md](docs/WINDOWS.md) | running reach from Windows |

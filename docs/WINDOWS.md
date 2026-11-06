@@ -6,10 +6,12 @@ This document records what differs from the Linux/macOS path, what is verified a
 
 ## What differs from Unix, and why
 
-Every Windows difference lives in `cmd/reach/platform_windows.go` and
-`internal/transport/localshell_windows.go`. Nothing else in reach branches on
-the operating system, so the cost of this port is visible in one place rather
-than spread through the harness adapters.
+Harness process and local-shell differences live in `cmd/reach/platform_windows.go`
+and `internal/transport/localshell_windows.go`; filesystem state and native
+runtime checks also have platform-specific implementations. Managed OrbStack
+control is macOS-specific, with a Linux Guest helper. Its namespace restrictions
+and preparation are documented in [MANAGED-PROJECTS.md](MANAGED-PROJECTS.md);
+Windows cross-builds do not establish native Windows managed-runtime support.
 
 ### There is no `execve`
 

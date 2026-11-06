@@ -1,8 +1,9 @@
 // Package fileops implements file access strategies layered over a transport.
 //
-// Strategies are tiered by what the target supports. Tier 0 (posix) needs
-// nothing but a shell and writes nothing to the target; higher tiers are
-// optimisations that are never required. See docs/TRANSPORTS.md.
+// Unmanaged strategies are tiered by what the target supports. Tier 0 (posix)
+// needs only a shell and installs nothing; higher tiers are optional
+// optimisations. Managed sessions instead require an explicitly prepared rooted
+// helper, with no POSIX/Python tier fallback. See docs/TRANSPORTS.md.
 package fileops
 
 import (

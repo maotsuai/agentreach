@@ -1,15 +1,19 @@
-// Command reach-helper is the optional helper reach installs on a target for
-// the helper tier.
+// Command reach-helper provides optional unmanaged helper access and mandatory
+// managed rooted operations.
 //
-// It is the only thing reach ever writes to a target's disk, and only when the
-// operator asks for it explicitly. It therefore does as little as possible: it
-// reads framed requests on stdin, performs file operations, and writes framed
-// responses on stdout. It opens no socket, forks nothing, reads no
-// configuration, and holds no state that outlives the process.
+// Unmanaged serve mode uses the legacy framing shared with the Python handler
+// in internal/fileops/handler.py. This optional helper tier installs a binary
+// only when the operator explicitly selects it.
 //
-// The protocol is byte-identical to the tier-2 Python handler's, so reach's
-// client speaks to either without knowing which it got. See
-// internal/fileops/handler.py for the framing.
+// Managed sessions require an explicitly prepared Linux helper. serve-rooted
+// uses a separate capability/version-negotiated protocol bound to one root
+// directory and project digest; it has no fallback to unmanaged tiers. Managed
+// dispatch never builds or installs the helper automatically.
+//
+// rooted-exec is a one-shot launcher: it holds the approved cwd directory fd,
+// changes directory through that fd and execs the command. report-cwd returns
+// the physical cwd in an encoded stderr record. Serve modes write only framed
+// protocol responses to stdout; diagnostics go to stderr.
 package main
 
 import (
@@ -20,6 +24,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/bojieli/agentreach/internal/rooted"
 	"io"
 	"os"
 	"path/filepath"
@@ -27,9 +32,9 @@ import (
 	"sort"
 )
 
-// version is stamped at build time. It is part of the installed path on the
-// target, so an upgraded reach installs a new helper instead of silently reusing
-// a stale one.
+// version is stamped at build time. For the unmanaged helper tier it is part
+// of the installed path, so an upgrade does not silently reuse a stale binary.
+// Managed preparation uses the fixed rooted helper path instead.
 var version = "dev"
 
 const (
@@ -38,6 +43,33 @@ const (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "report-cwd" {
+		if len(os.Args) != 3 {
+			fmt.Fprintln(os.Stderr, "reach-helper: invalid cwd report arguments")
+			os.Exit(2)
+		}
+		if err := rooted.ReportCwd(os.Args[2], os.Stderr); err != nil {
+			fmt.Fprintln(os.Stderr, "reach-helper:", err)
+			os.Exit(1)
+		}
+		return
+	}
+	if len(os.Args) > 1 && (os.Args[1] == "serve-rooted" || os.Args[1] == "rooted-exec") {
+		var err error
+		if os.Args[1] == "serve-rooted" && len(os.Args) == 4 {
+			err = rooted.Serve(os.Args[2], os.Args[3], os.Stdin, os.Stdout)
+		} else if os.Args[1] == "rooted-exec" && len(os.Args) == 5 {
+			err = rooted.Exec(os.Args[2], os.Args[3], os.Args[4])
+		} else {
+			err = fmt.Errorf("invalid rooted helper arguments")
+		}
+		if err != nil && !errors.Is(err, io.EOF) {
+			fmt.Fprintln(os.Stderr, "reach-helper:", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "--selftest":

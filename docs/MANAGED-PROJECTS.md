@@ -1,4 +1,4 @@
-# Managed OrbStack projects (P0)
+# Managed OrbStack projects (P0 + P1)
 
 Managed projects add an explicit Host authorization around an **existing**
 OrbStack Docker container. Ordinary SSH, local, Docker and Podman sessions keep
@@ -9,6 +9,42 @@ The control plane runs on macOS. Linux tests inject volume inspectors; a Linux
 binary refuses native OrbStack volume checks. Guest commands and file operations
 execute through Docker, including requests over already-open file helper pools
 and exec-server stdin channels.
+
+## Prepare the managed helper explicitly
+
+P1 requires a Linux helper at the fixed Guest path
+`/usr/local/bin/reach-helper`, for both workspace modes. Prepare it before
+registering a new project. Build inside the Linux development Guest with the
+repository's Go 1.25.8 toolchain and the target architecture:
+
+```sh
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath \
+  -ldflags '-s -w -X main.version=0.8.0' \
+  -o /approved/output/reach-helper-linux ./cmd/reach-helper
+sha256sum /approved/output/reach-helper-linux
+```
+
+The [Dockerfile](../examples/orbstack/Dockerfile) expects that explicitly built
+`reach-helper-linux` in its build context and copies it with mode 0755. Building
+or provisioning an image/container remains an operator action. Verify the actual
+Guest file is executable by the registered UID and run its `--selftest`, comparing
+the digest with the Guest-built artifact. Host external filesystems such as exFAT
+may not preserve Unix modes/ownership through a plain copy; the image COPY mode
+or explicitly preserved archive metadata must produce the required Guest mode. A missing helper,
+a P0 helper (even with the same release version), or an incompatible rooted
+capability returns `unsupported` with preparation instructions. Managed reads,
+writes and command starts never build a helper on the Host, upload one, install
+one, or fall back to the POSIX/Python tiers. Unmanaged tier negotiation and its
+explicit helper installation keep their existing behavior.
+
+Existing P0 project/session records remain readable and their immutable runtime
+bindings remain enforced. Their Guest must be prepared explicitly with the new
+helper before managed use. An existing session cannot bypass this requirement.
+If preparing a new image recreates/restarts the container, its old binding stays
+invalid; register a new project ID rather than overwriting the old record.
+Helper self-identification and capability negotiation do not establish protection
+against a malicious Guest of the same UID replacing the helper or controlling
+its kernel.
 
 ## Register an existing container
 
@@ -184,6 +220,87 @@ revocation. P0 does not implement Guest PTYs or verified signal delivery:
 managed `tty` and `process/signal` explicitly report unsupported. Closing/killing
 the local Docker client does **not** prove the Guest process has terminated.
 
+## Managed paths and command cwd
+
+Managed file operations use the registered `guest_path` as their root, including
+relative `reach fs` paths; changing a shell session's cwd does not change this
+file root. Guest absolute paths must remain beneath it. Shared projects also
+accept their explicitly registered Host project path. Codex protocol paths may
+use the controlled harness cwd's original and canonical spellings (for example
+`/var` and `/private/var`). Prefix siblings, other Host paths and Guest-owned
+Host mirror paths gain no authorization. Paths use POSIX Guest semantics.
+
+Host protocol aliases and `guest_path` must not strictly contain one another by
+path components. This applies to the registered shared `host_path` and every
+trusted harness cwd spelling, including its canonical spelling. Exact equality
+is allowed; prefix siblings such as `/project` and `/project-other` do not
+overlap. For example:
+
+| Host alias | Guest root | Result |
+| --- | --- | --- |
+| `/Volumes/DISK/project` | `/workspace/project` | allowed |
+| `/Volumes/DISK/project` | `/Volumes/DISK/project` | allowed |
+| `/Volumes/DISK/project` | `/Volumes/DISK/project/guest` | `path_denied` |
+| `/Volumes/DISK/project/host` | `/Volumes/DISK/project` | `path_denied` |
+
+Strict nesting would give one `file://` string two meanings, including when a
+canonical Guest URI is reused in a later request. Reach rejects the mapping
+before dispatch instead of changing its prefix priority or guessing which file
+was intended. Existing records remain readable by inspect/health and are not
+rewritten; managed dispatch refuses an ambiguous mapping. Prepare a separate
+Guest root such as `/workspace/project` and explicitly register a new project
+when its container binding changes. There is no automatic migration or rebind.
+
+The trusted entrypoint fixes the namespace: raw CLI input uses `Protocol`;
+exec-server maps its URI once, then uses `Guest` for underlying FileOps, pool
+members, derived paths and handles. Reopening a channel preserves that choice.
+`file:` URIs are decoded once and reject authorities (including `localhost`),
+queries, fragments, bad encoding, NUL and overlong values. A doubly encoded
+percent sequence remains a literal filename rather than being decoded again.
+
+The fixed-root helper holds an `os.Root` directory descriptor. Every read,
+write, rename, copy, remove, directory traversal, search, glob and canonicalize
+uses that root; both copy/rename paths are approved before dispatch. There is no
+shell `cp`, `readlink`, `find` or `grep` fallback for managed FileOps. A symlink
+that resolves outside the root is refused; removing the symlink itself remains
+allowed and recursive remove never follows it. The workspace root cannot be
+removed, renamed or replaced. Absolute symlink targets are refused by `os.Root`,
+even if their spelling points back inside the root. Internal relative symlinks
+can resolve safely. Copying symlinks is explicitly unsupported. Content reads,
+writes, hashes, copies and searches reject multiply linked regular files;
+ordinary Guest shell operations retain their own semantics.
+
+Managed writes use an exclusive random same-directory temporary file and atomic
+rename. Pools and reopened channels require the same root identity and project
+digest; file handles belong to one exec-server connection and every use rechecks
+the shared runtime guard. A failed runtime guard permanently retires that
+connection, including its old file handles and stdin channels; cleanup stays
+available. Request metadata is capped at 64 KiB before allocation; response and
+content frames plus aggregate reads/writes are capped at 64 MiB. Hash and search actual reads are
+bounded at 64 MiB; search limits one line to 1 MiB. Walk/search/glob visit at most
+10,000 entries at depth 128 and return bounded frames. Client cancellation closes
+the channel; an already dispatched Guest operation can continue within its budget.
+Glob patterns use Go `path.Match` syntax, matched against relative paths when
+they contain `/` or each filename otherwise; directory symlinks below the selected
+traversal root are not followed.
+Search uses Go regular expressions, with literal and case-insensitive options.
+These managed search/glob semantics do not inherit ripgrep ignore-file rules.
+
+Managed CLI exec, process/start and Claude Bash use the same one-shot Guest
+launcher: it opens the root and cwd directory descriptors, checks the negotiated
+root identity, changes directory through the held fd and execs the command. A
+bad cwd fails before environment exports and the command body. No later
+Transport layer adds a string `cd`, and the user's command text is unchanged.
+Physical cwd reports are base64 framed; managed cwd containing CR or LF is
+explicitly refused, while ordinary FileOps filenames retain POSIX newline
+semantics. The acquired directory instance stays fixed across symlink swaps; this does not
+prevent another Guest process from moving that directory after acquisition.
+A command may itself `cd` outside the project or access Guest `/usr`, caches,
+temporary directories and configured network services. A resulting outside cwd
+cannot be persisted or used by the next managed call, and is not written to
+Claude's narrow Host cwd callback. This is a starting-directory contract, not an
+OS shell sandbox or isolation from hostile same-UID Guest processes.
+
 ## Validation and limits
 
 `make check` runs vet plus race tests; `make lint` and normal/cross builds are
@@ -242,8 +359,9 @@ user daemon. Native acceptance should use dedicated random names/labels and exac
 IDs, and preserve its evidence separately. No physical unmount, engine restart,
 LAN reconfiguration or storage migration is implied by P0 validation.
 
-Mounts define Host file visibility. P0 does not restrict arbitrary Guest shell
-commands to the project directory; workspace PathMapper policy is P1. A dedicated
+Mounts define Host file visibility. P1 restricts managed FileOps and command
+**starting cwd** to the project root; it does not restrict arbitrary Guest shell
+commands after they start. A dedicated
 bridge also does not prevent Guest access to reachable Host/network services.
 OrbStack's Guest IP/`.orb.local` routes and LAN reachability require separate
 network validation. An image ID does not prove an unchanged writable rootfs.

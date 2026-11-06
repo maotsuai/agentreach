@@ -1,5 +1,9 @@
 FROM debian:bookworm-slim
 
+# Prepare this target-architecture binary explicitly in a Linux development
+# Guest before building the image; see docs/MANAGED-PROJECTS.md.
+COPY --chmod=0755 reach-helper-linux /usr/local/bin/reach-helper
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
        bash ca-certificates coreutils git python3 ripgrep tmux \

@@ -12,6 +12,15 @@ agent hands a piece of work to its operating system, and answers that handoff
 over an ssh connection instead of on your disk.** One request, one response, one
 tool call at a time.
 
+This walkthrough describes the SSH/unmanaged defaults. Managed OrbStack projects
+add a registered runtime guard, a required explicitly prepared rooted Guest
+helper and an fd-based starting-directory launcher. Their Host aliases and
+Guest root may be equal but cannot strictly contain one another by path
+components; ambiguous mappings return `path_denied` before dispatch. The rule
+also covers original/canonical harness cwd aliases. It does not migrate records
+or restrict arbitrary Guest shell filesystem access. See
+[managed preparation and paths](MANAGED-PROJECTS.md#managed-paths-and-command-cwd).
+
 ## What reach is not
 
 <p align="center">
@@ -24,8 +33,9 @@ tool call at a time.
 
 ### It is not SSHFS, or FUSE, or a mount of any kind
 
-reach never calls `mount(2)`. No kernel module, no kernel extension, no mount
-point, and nothing under `/Volumes` or `/mnt`, on either machine.
+reach never creates a FUSE or kernel filesystem mount. Managed projects use
+already prepared, explicitly approved Docker mounts; reach does not create
+those mounts during registration, health checks or ordinary file operations.
 
 This is a design decision, not an omission, and it comes from the one rule the
 whole project is built on:
@@ -344,7 +354,8 @@ $ reach build-box log
 | | |
 |---|---|
 | [ARCHITECTURE.md](ARCHITECTURE.md) | the design decisions and the rejected alternatives |
-| [TRANSPORTS.md](TRANSPORTS.md) | the three file-operation tiers, benchmarked on real links |
+| [TRANSPORTS.md](TRANSPORTS.md) | unmanaged file-operation tiers, benchmarked on real links |
+| [MANAGED-PROJECTS.md](MANAGED-PROJECTS.md) | rooted managed FileOps, namespace rules and cwd startup |
 | [RESEARCH.md](RESEARCH.md) | what each harness does internally, with transcripts |
 | [SECURITY.md](SECURITY.md) | the threat model, and what reach will not save you from |
 | [harnesses/](harnesses/) | per-agent notes: the seam, verified versions, known limits |

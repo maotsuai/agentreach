@@ -1,5 +1,15 @@
 # File-operation tiers
 
+This tier negotiation and the benchmark tables describe **unmanaged sessions**.
+Managed OrbStack projects require an explicitly prepared rooted helper at
+`/usr/local/bin/reach-helper`; they never auto-install it, build it on the Host
+or fall back to these shell/Python tiers. Their trusted path namespace is fixed
+at construction. Host aliases and the Guest root may be equal but cannot be
+strictly nested in either direction; ambiguous mappings return `path_denied`
+before dispatch. See [managed paths](MANAGED-PROJECTS.md#managed-paths-and-command-cwd)
+for the limits, preparation and unchanged record/inspect behavior. The legacy
+`reach helper status|uninstall` cache is not the managed fixed helper path.
+
 AgentReach separates *how it reaches a target* (transport: SSH, Docker, Podman) from *how it performs file operations on that target* (tier). The tier is negotiated automatically based on what the target supports. You can also pin a specific tier with `--fileops=<tier>`, and `reach doctor` reports which tiers a given host qualifies for and why.
 
 The key guarantee: **tier 0 works on any host running stock `sshd` and requires nothing installed, nothing written to disk, and nothing beyond a login shell.** Higher tiers are optimisations, never requirements.

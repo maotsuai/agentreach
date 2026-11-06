@@ -2,6 +2,17 @@
 
 Verified against **2.1.233**. Re-verify with `make conformance`.
 
+The general modes below describe unmanaged sessions. The managed OrbStack
+profile was separately verified with Claude Code 2.1.220 and uses strict
+controlled settings, Bash only, and a required rooted Guest helper. Its starting
+cwd is held through a directory fd, and validated physical cwd is the only value
+written to the narrow Host callback. Mirror/local-file opt-outs are refused.
+Host project/control-cwd aliases and the Guest root cannot strictly contain
+each other by components; exact equality is allowed and ambiguity returns
+`path_denied` before dispatch. Existing records are not automatically migrated
+or rebound. See [managed paths](../MANAGED-PROJECTS.md#managed-paths-and-command-cwd)
+and [versioned evidence](../validation/P1.md).
+
 ## Seam
 
 `CLAUDE_CODE_SHELL_PREFIX` — the prefix program receives the entire command

@@ -3,14 +3,22 @@
 Works against **0.148.0**, through a seam Codex itself provides: its
 exec-server protocol. Re-verify any version with `reach harness verify codex`.
 
+For managed OrbStack projects, see [managed paths](../MANAGED-PROJECTS.md#managed-paths-and-command-cwd).
+The rooted helper is required and URI mapping occurs once before Guest FileOps.
+Shared Host aliases and original/canonical control cwd aliases cannot be strict
+component ancestors or descendants of the Guest root; equality is allowed.
+Ambiguity returns `path_denied` before dispatch without migrating or rebinding
+records. The managed profile refuses local filesystem/configuration overrides.
+
 ## The finding that shapes everything
 
-Codex has no file tools. Measured at the wire — a mock model server recorded
-the `tools` array of codex 0.148.0's first Responses-API request — the model
-is offered `exec_command`, `write_stdin`, and five tools that touch no
-filesystem at all. There is no `read_file`, no `write_file`, no `edit`, no
-`grep`. Even `apply_patch` is not a wire tool: when the model uses it, it runs
-as a command *inside* `exec_command`.
+The original 0.148.0 wire probe advertised `exec_command`, `write_stdin` and
+five tools without filesystem access, with patching routed through the command
+tool. Tool advertisements also depend on bundled model metadata: the P1 offline
+conformance profile advertises native custom `apply_patch`. That actual tool
+has been verified through the exec-server filesystem for add/update/delete/move
+and outside-root rejection; it is not a compound shell-patch approximation.
+The exact profile and evidence are recorded in [P1 validation](../validation/P1.md).
 
 So Codex's entire tool surface funnels through one protocol. Intercept that
 protocol and there is nothing left to deny, nothing to mirror, and no gap for
@@ -23,7 +31,7 @@ around the fact that they cannot be redirected.
 Codex 0.148 supports *remote environments*: `$CODEX_HOME/environments.toml`
 points it at an external exec-server, a JSON-RPC endpoint that receives every
 process spawn and filesystem operation. reach is that server. `reach codex`
-builds a managed `CODEX_HOME` — the operator's real one is never touched —
+builds a controlled `CODEX_HOME` — the operator's real one is never touched —
 whose `environments.toml` selects reach and sets `include_local = false`, so
 the local machine is not merely avoided, it is absent from the list.
 

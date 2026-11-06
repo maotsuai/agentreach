@@ -9,6 +9,20 @@ details in closed harness binaries. Entries therefore name the harness versions
 a change was verified against: "works with Claude Code" is not a claim this
 project makes without a version attached.
 
+## [Unreleased]
+
+### Added
+
+- Managed OrbStack P1 Workspace/PathMapper: required explicitly prepared rooted
+  Guest FileOps, fd-based cwd startup, and fixed trusted namespaces across CLI,
+  exec-server, pools and handles. Host aliases and Guest roots may be equal but
+  cannot strictly contain one another by path components; ambiguous mappings
+  return `path_denied` before dispatch. Records remain inspectable without
+  migration or automatic rebind. Ordinary Guest shell access is not an OS sandbox.
+  See [managed preparation](docs/MANAGED-PROJECTS.md) and
+  [P1 evidence](docs/validation/P1.md), including real Claude Code 2.1.220 and
+  Codex 0.148.0 offline shell/native-patch conformance.
+
 ## [0.8.0] - 2026-09-23
 
 **reach stopped prompting for Bash commands on the target.** Verified against

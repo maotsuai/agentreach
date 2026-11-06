@@ -1,16 +1,16 @@
 # AgentReach P0 之后开发执行手册
 
-文档版本：1.0 · 2026-11-05
+文档版本：1.1 · 2026-11-06
 
 适用基线：P0 commit e4cd040bd0b02275fb8642f59d218a864c2541a6
 
 基线分支：codex/orbstack-execution-plane
 
-状态：规划文档；P1–P5 尚未启动。
+状态：P1 目标已实现，通过完整检查、原生验收与最终独立审计，相关文档和阶段证据已同步。P2–P5 尚未启动。P1 的版本、测试层级和证据见 [验证记录](validation/P1.md)。
 
 本文为后续 Sol 实现提供工程规格、任务拆分、验证门槛和交接格式。它不能保证实现绝不出错；它要求在不确定处停止依赖该结论的工作，通过实验和独立审计闭环，禁止用猜测、降级或改低验收标准消除错误。
 
-**当前用户只授权编写后续文档，未授权现在开始 P1。** 将来启动某阶段时，由 composer 提交该阶段范围、主要改动、影响、验证和回退方案，获得明确确认后实施。已确认阶段内的常规实现细节不重复请示。本文中的拟新增接口和示例不是现有命令，也不是预先授予运行 Docker、发布端口、迁移状态或删除资源的权限。
+初版编写时仅获授权编写规划文档。用户于 2026-11-05 确认完整 P1 方案并要求开工，当前授权止于 P1。后续阶段仍由 composer 提交范围、主要改动、影响、验证和回退方案，获得明确确认后实施。已确认阶段内的常规实现细节不重复请示。本文中的后续拟新增接口和示例不是现有命令，也不预先授予运行 Docker、发布端口、迁移状态或删除资源的权限。
 
 ## 阅读与执行索引
 
@@ -39,7 +39,7 @@
 按以下顺序判断“已经支持什么”：
 
 1. 当前 Git commit、实际代码和该版本的真实测试结果。
-2. [MANAGED-PROJECTS.md](MANAGED-PROJECTS.md) 的 P0 使用契约。
+2. [MANAGED-PROJECTS.md](MANAGED-PROJECTS.md) 的当前 P0 + P1 使用契约；历史 P0 能力以指定基线和实验记录为准。
 3. [RESEARCH.md](RESEARCH.md) 的指定版本实验记录，尤其 2026-11-01、2026-11-05 的修正。
 4. 用户提供的《AgentReach 二次开发架构蓝图：OrbStack 执行平面 v1.1》，作为目标而非已实现 API。
 5. 本文的后续设计选择；如果与新的真实证据冲突，先修订设计，不能偷偷改变实现或安全承诺。
@@ -66,6 +66,8 @@ P0 **没有**：
 现有配置是严格 JSON。不要把原蓝图概念 TOML 拿来当配置加载器输入，也不要无必要地新增第二套格式。
 
 ### 1.2 代码定位表
+
+下表的“当前”以本手册顶部 P0 适用基线为准。P1 增量实现与验证见 [P1 记录](validation/P1.md)，不要据此把 P0 当作当前候选的完整能力描述。
 
 | 文件/包 | 当前职责 | 后续改动约束 |
 | --- | --- | --- |
@@ -135,7 +137,7 @@ PathMapper 不能限制 Shell 内的 open()、子进程、网络或所有同 UID
 
 ### 2.4 本轮与后续授权
 
-本轮不执行 P1，不启动或重建容器，不升级 OrbStack/harness，不迁移仓库，不覆盖安装 reach，不 push。
+本轮执行已确认的 P1，包括显式准备 helper、创建独立验收资源和对本任务容器进行身份负例验证。P0/开发容器、全局 engine、OrbStack/harness 版本、仓库位置和用户安装保持原状；不 push，不进入 P2。资源和验证边界见 [P1 验证记录](validation/P1.md)。
 
 后续实施沿用用户分工：composer 做设计、统筹和验收；GPT-6.1 Sol xhigh 编写实质代码/配置；Luna 执行经审阅的 commit。重要代码通过测试后，由未参与实现和调试的代理独立审计。额度不足时记录准确中断点，不以不断新建代理掩盖同一个失败原因，不擅自切换实现模型。
 
@@ -324,12 +326,14 @@ Guest helper 运行在 Guest，不能提供比容器权限更强的敌对同 UID
 
 定义 PathRequest 至少包含 operation、path namespace、path、必要的 second_path 和请求 cwd。namespace 由受信调用入口确定，不能让模型随意声称一个路径已批准。
 
+**构造前置约束（已获用户确认）**：Host 协议别名与 Guest 根任一是另一的严格路径分量前缀时，返回 `path_denied`；完全相等允许，`/project` 与 `/project-other` 等分量兄弟允许。检查注册的 shared `host_path`，以及 harness 控制 cwd 的原始、规范路径等每个可信别名。不能通过改前缀优先级猜测意图，否则同一 file URI 可能在后续请求指向另一文件。拒绝发生在受管派发前；已有记录仍可只读 inspect/health，不改 schema、不自动迁移或重绑定。应显式准备 `/workspace/project` 等独立 Guest 根，绑定改变时登记新项目。
+
 1. 检查编码、NUL、长度、URI scheme/authority、重复解码和未知字段；file URI 只按协议解码一次。拒绝 remote authority、查询和 fragment 等不支持形态。
 2. **Host 协议别名**：只映射已验证的 harness 控制 cwd 原始/规范路径及项目明确共享路径。使用分量边界，/a/proj-other 不能匹配 /a/proj。
 3. **Guest 绝对路径**：用 POSIX path 语义，必须落在 guest_root；不得因 Host 的 filepath 在不同平台上表现不同而改变 Guest 语义。
 4. **相对路径**：FileOps 默认相对登记 guest_root，保持当前协议行为；process cwd 则按单独入口契约处理。不得把 session 的可变 cwd、harness Host cwd 和 FileOps 根混用。
 5. 在词法规范化前保留足够上下文识别 ..，规范化后再次做根分量检查。空路径按每个操作明确是根还是无效，不统一猜测。
-6. 得到 root-relative 路径交给 rooted helper；最终实际操作仍在 Guest 根句柄内完成，不信任预检 realpath 的短暂结果。
+6. Host 协议映射只执行一次：原始 CLI 使用 Protocol；exec-server 映射 URI 后，底层 FileOps、pool、派生路径和句柄固定使用 Guest，reopen 保持该命名空间。得到 root-relative 路径交给 rooted helper；最终实际操作仍在 Guest 根句柄内完成，不信任预检 realpath 的短暂结果。
 7. 返回规范 Guest 路径用于显示；不把 Guest 路径直接传给 Host os.Open。
 
 Host 大小写别名和硬链接问题继续使用 internal/hostpath；Guest 路径不要一律 lower-case。guest-owned 没有 host_path，严禁为了 IDE 便利创建虚构 Host 镜像目录或通过 ~/OrbStack 视图旁路文件操作。
@@ -369,6 +373,7 @@ Claude 的 cd 行为需要新增明确语义：若一次普通 Guest Bash 自行
 ### 6.6 P1 验收
 
 - 双 workspace 模式的全部 FileOps 正常路径、只读 mount、相对/绝对路径、Unicode、空格、长名、合法 Host 别名。
+- Host 别名与 Guest 根双向严格嵌套在派发前拒绝；相等和分量兄弟允许；覆盖原始/规范控制 cwd、canonical Guest URI 跨请求复用、拒绝时零文件或命令 body。
 - ..、根前缀碰撞、URI 编码、根外 symlink、父目录 symlink 替换竞态、悬空链接、多硬链接、递归删除和双路径操作。
 - warm pool、旧文件句柄、直接 helper 请求均不绕过；旧 helper 或 capability 不匹配明确拒绝。
 - 真实 Codex native apply_patch 根内新增/更新/删除；根外和 move 越界无 Host 副作用。
@@ -755,7 +760,7 @@ start/stop/restart/provision/rebind 的策略和能力分别建模，不挂在 h
 
 ## 13. 需先实验的技术问题
 
-不要求现在做实验；将来在对应阶段开始时使用最小、可撤销的试验验证。技术版本变化时查对应版本官方资料和实际程序，不能只复制本手册或网上片段。
+P1 对应实验已完成，证据见 [P1 验证记录](validation/P1.md)；其余问题在对应阶段开始时使用最小、可撤销的试验验证。技术版本变化时查对应版本官方资料和实际程序，不能只复制本手册或网上片段。
 
 | 问题 | 最小实验 | 不成立时 |
 | --- | --- | --- |
@@ -919,4 +924,4 @@ root/身份/授权/审计/失败锁存；跨进程并发与崩溃；
 6. 备份还原与故障 runbook，明确不自动做的破坏性动作。
 7. 未执行测试、未支持功能和后置任务列表。
 
-**下一步的正确起点**：用户将来批准 P1 后，先做 P1-A 的路径请求矩阵和 P1-B 的 rooted helper 最小实验；不要现在开始代码实现，也不要直接跳到 terminal/service。
+**当前停点**：P1 实现、验收与独立审计完成，阶段源码冻结。P2 及后续阶段须另行提交方案并获得确认；不从 P1 自动继续到 capability、terminal 或 service。

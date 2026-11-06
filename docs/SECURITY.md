@@ -11,10 +11,20 @@ and its conversation all stay on your machine. reach sends commands and file
 bytes; it never sends authentication material. This is the property that makes
 reach different from running the agent remotely.
 
-**Nothing is installed by default.** Tier 0 uses only a POSIX shell and writes
+**Nothing is installed by default in unmanaged sessions.** Tier 0 uses only a POSIX shell and writes
 nothing to the target's disk. The one tier that does write a binary
 (`--fileops=helper`) is never selected by autonegotiation: reaching it takes an
 operator naming it, on the command line, for that session.
+
+Managed OrbStack projects instead require an explicitly prepared rooted helper
+at a fixed Guest path; ordinary operations never install it or fall back to an
+unconstrained tier. Managed file paths and starting cwd are confined to the
+registered root, while arbitrary Guest shell code retains its normal access.
+Host protocol aliases (including original/canonical harness cwd) and the Guest
+root cannot strictly contain each other by components. Equality is allowed;
+strict nesting returns `path_denied` before dispatch so one URI cannot silently
+select a different file. Records remain inspectable and are not migrated or
+rebound. See [the managed contract](MANAGED-PROJECTS.md#managed-paths-and-command-cwd).
 
 **SSH agent forwarding is off, unconditionally.** reach never passes
 `ForwardAgent=yes`. A forwarded agent socket on a host with a hostile root lets
@@ -81,6 +91,7 @@ impossible rather than unlikely.
 
 `--allow-local-file-tools` disables this. It exists for operators who have
 arranged the paths to coincide and understand what they are doing.
+This opt-out and mirror mode are refused for managed projects.
 
 ## Reporting
 

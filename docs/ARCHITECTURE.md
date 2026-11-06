@@ -7,6 +7,11 @@
 
 This document is the authoritative description of how AgentReach is built and why. It covers the design decisions, the rejected alternatives, and the constraints that shaped both. For a quick overview, the [README](../README.md) is the right starting point.
 
+The SSH/unmanaged defaults below are complemented by the managed OrbStack
+contract in [MANAGED-PROJECTS.md](MANAGED-PROJECTS.md). Managed projects explicitly
+prepare a required rooted helper; its protocol and limits differ from the
+optional interchangeable tiers and managed mirror mode is refused.
+
 ## Problem
 
 Coding agents assume their tools act on the machine they run on. Three
@@ -281,7 +286,7 @@ answered locally.
 
 ## Tiers
 
-Three strategies implement `FileOps`. They share almost no code — a shell
+For unmanaged sessions, three strategies implement `FileOps`. They share almost no code — a shell
 pipeline, a Python handler, a Go binary — and a user cannot tell which is in
 use. That interchangeability claim is only worth something
 because every tier runs one identical conformance suite
@@ -311,6 +316,22 @@ Full detail, including what each tier requires and writes, is in
 - **Only the helper tier writes to the target**, and only when the operator
   names it: autonegotiation stops below it. Everything it installs is listed by
   `reach doctor` and removed by `reach helper uninstall`.
+
+## Managed workspace boundary
+
+Managed requests pass through the Host PathMapper and a fixed-root Guest helper.
+The trusted entrypoint chooses the namespace: CLI input is Protocol;
+exec-server maps its URI once and uses Guest for FileOps, pool members, derived
+paths and handles. The helper holds `os.Root`; command startup uses a held cwd
+fd and the negotiated root identity before exec.
+
+A Host protocol alias and Guest root cannot be strict component ancestors of
+each other. Equality is allowed, as are prefix siblings. Validate registered
+shared paths and each original/canonical harness cwd alias before dispatch;
+reject ambiguous mappings with `path_denied` rather than reinterpreting a URI
+or changing priority. Existing records remain inspectable without migration or
+rebind. Ordinary Guest shell access is not an OS sandbox. Detailed operation
+limits and preparation are in [managed paths](MANAGED-PROJECTS.md#managed-paths-and-command-cwd).
 
 ## Two modes
 
@@ -475,7 +496,7 @@ Everything below is optional; reach works with none of it set.
 | `REACH_SSH_CONFIG` | An alternate `ssh_config`, passed as `ssh -F`. Lets reach's connections be configured separately from your interactive ones without duplicating host definitions. |
 | `REACH_CONTROL_PERSIST` | How long the authenticated connection outlives its last command — a duration, or `yes` to keep it until `reach down`. Default one hour. Every connection after `reach up` runs in batch mode and cannot prompt, so on a host wanting a password or a hardware token this is the difference between a reconnect and a failed tool call. |
 | `REACH_NO_AUDIT` | Set to any value to stop recording what reach did. A record of every command is occasionally the wrong thing to keep — a shared machine, a command line carrying a secret — and that judgement is the operator's. |
-| `REACH_HELPER_BINARY` | A helper binary to install instead of the one reach would locate or build. For the helper tier only. |
+| `REACH_HELPER_BINARY` | A helper binary to install instead of the one reach would locate or build. For the unmanaged helper tier only; managed projects use the explicitly prepared fixed Guest path. |
 | `REACH_LOCAL_SHELL` | Windows only: a POSIX shell to use for `local://` targets. reach will not guess one, because guessing wrong runs your command under a shell that quotes differently. |
 
 The session file records the target, the negotiated tier, and the capability

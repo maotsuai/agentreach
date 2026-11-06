@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/bojieli/agentreach/internal/audit"
+	"github.com/bojieli/agentreach/internal/fileops"
 	"github.com/bojieli/agentreach/internal/reach"
 	"github.com/bojieli/agentreach/internal/transport"
 )
@@ -163,6 +164,13 @@ func (s *Server) handleFsCanonicalize(ctx context.Context, raw json.RawMessage) 
 	}
 	opCtx, cancel := s.operationContext(ctx)
 	defer cancel()
+	if s.sess.Managed != nil {
+		canon, e := fileops.Canonicalize(opCtx, s.ops, target)
+		if e != nil {
+			return nil, fsError(e)
+		}
+		return map[string]any{"path": pathToURI(canon)}, nil
+	}
 	res, err := s.t.Run(opCtx, reach.ExecRequest{
 		Command:   "readlink -f " + transport.ShellQuote(target),
 		MaxOutput: 64 << 10,
@@ -226,6 +234,20 @@ func (s *Server) handleFsWalk(ctx context.Context, raw json.RawMessage) (any, *r
 	if rerr != nil {
 		return nil, rerr
 	}
+	if s.sess.Managed != nil {
+		if p.Options.MaxDepth < 0 || p.Options.MaxDirectories < 0 || p.Options.MaxEntries < 0 {
+			return nil, invalidParams("negative walk limits")
+		}
+		if p.Options.MaxDepth == 0 || p.Options.MaxDepth > 128 {
+			p.Options.MaxDepth = 128
+		}
+		if p.Options.MaxDirectories == 0 || p.Options.MaxDirectories > 10000 {
+			p.Options.MaxDirectories = 10000
+		}
+		if p.Options.MaxEntries == 0 || p.Options.MaxEntries > 10000 {
+			p.Options.MaxEntries = 10000
+		}
+	}
 	opCtx, cancel := s.operationContext(ctx)
 	defer cancel()
 
@@ -246,23 +268,36 @@ func (s *Server) handleFsWalk(ctx context.Context, raw json.RawMessage) (any, *r
 }
 
 type walker struct {
-	s         *Server
-	ctx       context.Context
-	opts      walkOptions
-	entries   []map[string]any
-	errs      []map[string]any
-	dirCount  int
-	examined  int
-	truncated bool
+	s           *Server
+	ctx         context.Context
+	opts        walkOptions
+	entries     []map[string]any
+	errs        []map[string]any
+	dirCount    int
+	examined    int
+	outputBytes int
+	truncated   bool
 }
 
 func (w *walker) walk(dir string, depth int) {
+	if w.ctx.Err() != nil {
+		w.truncated = true
+		return
+	}
 	if w.truncated || w.opts.MaxDepth > 0 && depth >= w.opts.MaxDepth {
 		return
 	}
 	infos, err := w.s.ops.List(w.ctx, dir)
 	if err != nil {
-		w.errs = append(w.errs, map[string]any{"path": pathToURI(dir), "message": err.Error()})
+		p := pathToURI(dir)
+		if w.s.sess.Managed != nil {
+			w.outputBytes += len(p) + len(err.Error()) + 64
+			if w.outputBytes > 64<<20 {
+				w.truncated = true
+				return
+			}
+		}
+		w.errs = append(w.errs, map[string]any{"path": p, "message": err.Error()})
 		return
 	}
 	for _, fi := range infos {
@@ -284,7 +319,15 @@ func (w *walker) walk(dir string, depth int) {
 		if isDir {
 			kind = "directory"
 		}
-		w.entries = append(w.entries, map[string]any{"path": pathToURI(full), "kind": kind})
+		p := pathToURI(full)
+		if w.s.sess.Managed != nil {
+			w.outputBytes += len(p) + len(kind) + 64
+			if w.outputBytes > 64<<20 {
+				w.truncated = true
+				return
+			}
+		}
+		w.entries = append(w.entries, map[string]any{"path": p, "kind": kind})
 		if !isDir {
 			continue
 		}
@@ -355,6 +398,14 @@ func (s *Server) handleFsCopy(ctx context.Context, raw json.RawMessage) (any, *r
 	if rerr != nil {
 		return nil, rerr
 	}
+	if s.sess.Managed != nil {
+		opCtx, cancel := s.operationContext(ctx)
+		defer cancel()
+		if e := fileops.Copy(opCtx, s.ops, src, dst, p.Recursive); e != nil {
+			return nil, fsError(e)
+		}
+		return map[string]any{}, nil
+	}
 	// The tiers have no copy, and reading the content across the wire to write
 	// it back is exactly the inefficiency reach exists to avoid: one cp on the
 	// target does it without the bytes ever leaving the machine.
@@ -405,6 +456,10 @@ func (s *Server) handleFsOpen(raw json.RawMessage) (any, *rpcError) {
 		return nil, rerr
 	}
 	s.mu.Lock()
+	if len(s.handles) >= 10000 {
+		s.mu.Unlock()
+		return nil, invalidParams("too many file handles")
+	}
 	s.handles[p.HandleID] = target
 	s.mu.Unlock()
 	return map[string]any{"handleId": p.HandleID}, nil
@@ -420,6 +475,9 @@ func (s *Server) handleFsReadBlock(ctx context.Context, raw json.RawMessage) (an
 	var p fsReadBlockParams
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return nil, invalidParams("fs/readBlock: %v", err)
+	}
+	if p.Offset > 1<<63-1 || p.Len < 0 || p.Len > 64<<20 {
+		return nil, invalidParams("invalid readBlock bounds")
 	}
 	s.mu.Lock()
 	target, ok := s.handles[p.HandleID]

@@ -35,6 +35,16 @@ Set `REACH_TEST_SSH_HOST=my-box` to run against a real remote host. Set `REACH_T
 
 Tests that spend model tokens are gated behind `make e2e` and are never part of `make check`, so you can develop and verify the vast majority of the project without an API key.
 
+For managed Workspace/PathMapper changes, also follow
+[MANAGED-PROJECTS.md](docs/MANAGED-PROJECTS.md) and record the relevant native
+checks in [validation/P1.md](docs/validation/P1.md). Cover both strict Host-alias /
+Guest-root containment directions, equality, component-boundary siblings,
+original/canonical control cwd, and canonical URI reuse. Rejected mappings must
+dispatch no file or command body. Keep trusted namespaces explicit so URI input
+is mapped once, including pool/reopen and handles. Real Claude/Codex offline
+conformance is separate from unit tests and must not be replaced with scripted
+RPC success or paid-model calls.
+
 ---
 
 ## Adding or changing a file-operation tier

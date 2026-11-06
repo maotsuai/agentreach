@@ -60,6 +60,9 @@ func openFileOps(ctx context.Context, sessionName string) (*session.Session, fil
 // path.Clean is used rather than filepath.Clean: these are the target's paths,
 // which are POSIX regardless of the operating system reach itself runs on.
 func resolvePath(s *session.Session, p string) string {
+	if s.Managed != nil {
+		return p
+	}
 	if strings.HasPrefix(p, "/") {
 		return path.Clean(p)
 	}
@@ -163,9 +166,16 @@ func cmdFS(ctx context.Context, args []string) error {
 		return err
 
 	case "write":
-		data, err := io.ReadAll(os.Stdin)
+		var reader io.Reader = os.Stdin
+		if s.Managed != nil {
+			reader = io.LimitReader(os.Stdin, 64<<20+1)
+		}
+		data, err := io.ReadAll(reader)
 		if err != nil {
 			return err
+		}
+		if s.Managed != nil && len(data) > 64<<20 {
+			return fmt.Errorf("managed write exceeds 64 MiB limit")
 		}
 		target := resolvePath(s, arg)
 		werr := fo.Write(ctx, target, data, 0o644)
@@ -176,6 +186,9 @@ func cmdFS(ctx context.Context, args []string) error {
 		dir := resolvePath(s, arg)
 		if arg == "" {
 			dir = s.Cwd()
+			if s.Managed != nil {
+				dir = s.Target.Workspace
+			}
 		}
 		entries, err := fo.List(ctx, dir)
 		if err != nil {
@@ -209,6 +222,9 @@ func cmdFS(ctx context.Context, args []string) error {
 
 	case "grep":
 		root := s.Cwd()
+		if s.Managed != nil {
+			root = s.Target.Workspace
+		}
 		if len(pos) > 1 {
 			root = resolvePath(s, pos[1])
 		}
@@ -229,6 +245,9 @@ func cmdFS(ctx context.Context, args []string) error {
 
 	case "glob":
 		root := s.Cwd()
+		if s.Managed != nil {
+			root = s.Target.Workspace
+		}
 		if len(pos) > 1 {
 			root = resolvePath(s, pos[1])
 		}

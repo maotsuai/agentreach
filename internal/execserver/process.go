@@ -125,11 +125,11 @@ func (s *Server) handleProcessStart(ctx context.Context, raw json.RawMessage) (a
 	}
 
 	sentinel := transport.NewSentinel()
-	wrapped := transport.WrapWithSentinel(transport.BuildCommand(reach.ExecRequest{
-		Command: command,
-		Dir:     dir,
-		Env:     env,
-	}), sentinel)
+	built, buildErr := s.sess.Command(reach.ExecRequest{Command: command, Dir: dir, Env: env})
+	if buildErr != nil {
+		return nil, invalidParams("process/start: %v", buildErr)
+	}
+	wrapped := transport.WrapWithSentinel(built, sentinel)
 
 	// The context deliberately outlives this request: a build the agent starts
 	// must not die because the process/start RPC was answered. It ends when the

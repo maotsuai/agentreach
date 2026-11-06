@@ -13,8 +13,12 @@ import (
 
 	"github.com/bojieli/agentreach/internal/hostpath"
 	"github.com/bojieli/agentreach/internal/project"
+	"github.com/bojieli/agentreach/internal/reach"
+	"github.com/bojieli/agentreach/internal/rooted"
 	"github.com/bojieli/agentreach/internal/runtime/docker"
 	"github.com/bojieli/agentreach/internal/runtime/orbstack"
+	"github.com/bojieli/agentreach/internal/transport"
+	"github.com/bojieli/agentreach/internal/workspace"
 )
 
 // Managed pins a session to the full immutable trusted project record.
@@ -144,4 +148,50 @@ func (s *Session) ProbeManaged(ctx context.Context, registered project.Record) e
 	}
 	defer func() { _ = t.Close() }()
 	return s.probeWithTransport(ctx, t, check)
+}
+
+// PathMapper uses only approved shared roots. A harness may add its trusted control cwd separately.
+func (s *Session) PathMapper() (workspace.Mapper, error) {
+	r, e := s.ManagedProject()
+	if e != nil {
+		return workspace.Mapper{}, e
+	}
+	return managedPathMapper(r)
+}
+
+// managedPathMapper validates the registered Protocol capability before any
+// transport, including bootstrap probes and fixed-Guest consumers, is created.
+func managedPathMapper(r project.Record) (workspace.Mapper, error) {
+	m := workspace.Mapper{Root: r.Spec.Workspace.GuestPath}
+	if r.Spec.Workspace.HostPath != "" {
+		m.HostAliases = []string{r.Spec.Workspace.HostPath}
+	}
+	if e := m.ValidateProtocolAliases(); e != nil {
+		return workspace.Mapper{}, e
+	}
+	return m, nil
+}
+
+// Command builds the one managed launcher. Its caller must leave ExecRequest.Dir empty afterwards.
+func (s *Session) Command(req reach.ExecRequest) (string, error) {
+	if s.Managed == nil {
+		return transport.BuildCommand(req), nil
+	}
+	m, e := s.PathMapper()
+	if e != nil {
+		return "", e
+	}
+	cwd := req.Dir
+	if cwd == "" {
+		cwd = m.Root
+	}
+	r, e := m.Map(workspace.PathRequest{Operation: "cwd", Namespace: workspace.Guest, Path: cwd})
+	if e != nil {
+		return "", e
+	}
+	id, e := s.rootBinding.Identity()
+	if e != nil {
+		return "", e
+	}
+	return rooted.Command(m.Root, r.Relative, req, id)
 }

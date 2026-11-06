@@ -82,8 +82,9 @@ func contextWithAtLeast(ctx context.Context, d time.Duration) (context.Context, 
 // framing, and the throughput win here comes from not spawning a process per
 // operation, not from overlapping requests within one session.
 type handlerOps struct {
-	base *POSIX
-	tier reach.Tier
+	rooted *rootConfig
+	base   *POSIX
+	tier   reach.Tier
 	// label names the program on the other end, for error messages an operator
 	// has to act on: "the python handler died" and "the agent died" call for
 	// different next steps.
@@ -323,6 +324,9 @@ func (p *handlerOps) roundTrip(ctx context.Context, req map[string]any, payload 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	if p.closed.Load() {
+		return nil, nil, fmt.Errorf("file access is closed")
+	}
 	if p.broken != nil {
 		if err := p.reopen(ctx); err != nil {
 			return nil, nil, err
@@ -340,6 +344,24 @@ func (p *handlerOps) roundTrip(ctx context.Context, req map[string]any, payload 
 		defer cancel()
 	}
 
+	if p.rooted != nil && p.first {
+		h, _, e := p.exchange(ctx, map[string]any{"op": "ping"}, nil)
+		if e != nil {
+			_ = p.Close()
+			return nil, nil, e
+		}
+		if e = p.rooted.validate(h); e != nil {
+			_ = p.Close()
+			return nil, nil, e
+		}
+		if req["op"] == "ping" {
+			return h, nil, nil
+		}
+	}
+	return p.exchange(ctx, req, payload)
+}
+
+func (p *handlerOps) exchange(ctx context.Context, req map[string]any, payload []byte) (map[string]any, []byte, error) {
 	p.id++
 	req["id"] = p.id
 
@@ -385,6 +407,16 @@ func (p *handlerOps) roundTrip(ctx context.Context, req map[string]any, payload 
 		if r.err != nil {
 			p.broken = r.err
 			return nil, nil, p.startupError(r.err)
+		}
+		if p.rooted != nil {
+			if r.hdr["id"] != float64(p.id) {
+				_ = p.Close()
+				return nil, nil, fmt.Errorf("invalid rooted response request ID")
+			}
+			if e := p.rooted.validate(r.hdr); e != nil {
+				_ = p.Close()
+				return nil, nil, e
+			}
 		}
 		p.first, p.proven = false, true
 		if ok, _ := r.hdr["ok"].(bool); !ok {

@@ -629,3 +629,29 @@ func TestMockAnthropicDialectRejectsChatEndpoint(t *testing.T) {
 		t.Errorf("anthropic mock should 404 the chat endpoint, got %d", status)
 	}
 }
+
+func TestMockCwdIsExplicitAndLeavesDefaultUnchanged(t *testing.T) {
+	for _, tool := range []string{"exec_command", "shell_command"} {
+		m := StartMock("cwd", DialectResponses)
+		name, args := m.pickTool([]toolSpec{{Type: "function", Name: tool}})
+		if name != tool {
+			t.Fatal(name)
+		}
+		var got map[string]any
+		if e := json.Unmarshal([]byte(args), &got); e != nil {
+			t.Fatal(e)
+		}
+		if _, ok := got["workdir"]; ok {
+			t.Fatal("default probe cwd changed")
+		}
+		m.SetCwd("/workspace/project/dir with space")
+		_, args = m.pickTool([]toolSpec{{Type: "function", Name: tool}})
+		if e := json.Unmarshal([]byte(args), &got); e != nil {
+			t.Fatal(e)
+		}
+		if got["workdir"] != "/workspace/project/dir with space" {
+			t.Fatal(got)
+		}
+		m.Close()
+	}
+}

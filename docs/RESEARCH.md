@@ -2,9 +2,11 @@
 
 Everything in this document was **verified empirically** against the named version by running a real agent, not inferred from documentation. Each claim carries the version it was checked against and the method used. Re-verify with `make conformance` after upgrading a harness.
 
-Latest managed-project experiment: 2026-10-31 on macOS arm64; see the P0 record
-below. Earlier harness findings were verified on 2026-08-15 against the versions
-named in their sections, on Linux x86_64 and macOS arm64.
+The P0 managed-project log below records its original macOS arm64 experiment
+and subsequent corrections. P1 Workspace/PathMapper experiments, candidates and
+independent audit evidence are maintained in [validation/P1.md](validation/P1.md).
+Earlier harness findings were verified on 2026-08-15 against the versions named
+in their sections, on Linux x86_64 and macOS arm64.
 
 For per-agent quick reference (seam, modes, known limits), see the individual files in [`docs/harnesses/`](harnesses/). This document records the raw experimental findings that back those claims.
 
@@ -595,3 +597,36 @@ run passed, and Linux/Darwin lint each reported 0 issues. Evidence is
 `/tmp/agentreach-p0-final-df-harnessprobe-lint.log`. This follow-up changes only
 test fixture paths and this record; the `0376bd39...` product candidate is
 unchanged and was not rebuilt or relaunched.
+
+## Managed OrbStack P1 — 2026-11-05 to 2026-11-06
+
+P1 was measured in the Go 1.25.8 Linux/arm64 development Guest and with its
+Darwin/arm64 cross-built candidate on the native macOS control plane. Real
+Claude Code 2.1.220 and Codex 0.148.0 ran against localhost mocks and dummy
+credentials. Shared-project and guest-owned shell/file operations, native custom
+patch add/update/delete/move, outside-root rejection, cwd descriptor races,
+helper capability failure, and old-channel invalidation have separate evidence
+in [validation/P1.md](validation/P1.md). These results do not add later policy,
+terminal, service, port or reconciliation features to P0.
+
+Independent audit reproduced a double mapping that silently wrote a different
+file inside the project. The corrected trusted entrypoint fixes the namespace:
+raw CLI input is Protocol; exec-server maps its URI once and underlying FileOps,
+pool members, derived paths and handles are Guest. Independent targeted review
+and native retesting confirmed that correction.
+
+A separate experiment showed that strict Host/Guest component nesting is also
+ambiguous across requests: a returned Guest URI can otherwise be interpreted as
+a Host subpath next time. The user approved rejecting strict nesting in either
+direction, while allowing equality and component-boundary siblings. Native
+projects with both invalid shapes stayed inspectable/healthy but refused file,
+command and real Codex dispatch without changing records or canaries. An equal
+Host/Guest path project passed canonical URI reuse and real Claude/Codex
+shell/native patch cases. The shared Host projection was expected and checked
+separately from unapproved Host/control-cwd canaries.
+
+The final delivery's code behavior matches the fully checked contract candidate;
+the subsequent change only clarified three GoDoc scope comments. Full check,
+lint, cross-builds, exact hashes, the final review status and retained evidence
+are recorded in [P1 validation](validation/P1.md), rather than treating historical
+P0 `/tmp` cwd access as the current P1 file/cwd contract.

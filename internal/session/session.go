@@ -17,6 +17,7 @@ import (
 	"github.com/bojieli/agentreach/internal/reach"
 	"github.com/bojieli/agentreach/internal/state"
 	"github.com/bojieli/agentreach/internal/transport"
+	"github.com/bojieli/agentreach/internal/workspace"
 )
 
 // Mode selects how much of the harness's tool surface reach redirects.
@@ -43,6 +44,7 @@ const (
 // add a lifecycle, a socket, crash recovery and orphaned processes in exchange
 // for nothing.
 type Session struct {
+	rootBinding fileops.RootBinding
 	// Version is the schema version of this document. See SchemaVersion.
 	Version  int        `json:"version"`
 	Name     string     `json:"name"`
@@ -432,7 +434,11 @@ func (s *Session) Cwd() string {
 	if err != nil {
 		return s.Target.Workspace
 	}
-	if cwd := strings.TrimSpace(string(data)); cwd != "" {
+	cwd := strings.TrimSpace(string(data))
+	if s.Managed != nil {
+		cwd = strings.TrimSuffix(string(data), "\n")
+	}
+	if cwd != "" {
 		return cwd
 	}
 	return s.Target.Workspace
@@ -444,9 +450,27 @@ func (s *Session) Cwd() string {
 // changes on almost every command, and rewriting the whole session document
 // each time would make concurrent commands race over unrelated fields.
 func (s *Session) SetCwd(cwd string) error {
-	cwd = strings.TrimSpace(cwd)
+	if s.Managed != nil {
+		m, e := s.PathMapper()
+		if e != nil {
+			return e
+		}
+		r, e := m.Map(workspace.PathRequest{Operation: "cwd", Namespace: workspace.Guest, Path: cwd})
+		if e != nil {
+			return e
+		}
+		cwd = r.Guest
+	}
+	if s.Managed == nil {
+		cwd = strings.TrimSpace(cwd)
+	}
 	if cwd == "" {
 		return nil
+	}
+	if s.Managed != nil {
+		if e := s.CheckControlPaths(); e != nil {
+			return e
+		}
 	}
 	if _, err := Dir(); err != nil {
 		return err
@@ -454,6 +478,22 @@ func (s *Session) SetCwd(cwd string) error {
 	p, err := cwdPathFor(s.Name)
 	if err != nil {
 		return err
+	}
+	if s.Managed != nil {
+		f, e := os.CreateTemp(filepath.Dir(p), ".reach-session-cwd-*")
+		if e != nil {
+			return e
+		}
+		tmp := f.Name()
+		defer os.Remove(tmp)
+		if _, e = f.WriteString(cwd + "\n"); e != nil {
+			_ = f.Close()
+			return e
+		}
+		if e = f.Close(); e != nil {
+			return e
+		}
+		return os.Rename(tmp, p)
 	}
 	tmp := fmt.Sprintf("%s.%d.tmp", p, os.Getpid())
 	if err := os.WriteFile(tmp, []byte(cwd+"\n"), 0o600); err != nil {
@@ -672,6 +712,9 @@ func (s *Session) rootedTwin(a map[string]string, wrote string) string {
 }
 
 func (s *Session) managedTransport(r project.Record, check func(context.Context) error) (transport.Transport, error) {
+	if _, e := managedPathMapper(r); e != nil {
+		return nil, e
+	}
 	env, err := r.Spec.Docker.Environment()
 	if err != nil {
 		return nil, err
@@ -692,16 +735,30 @@ var tildeWord = regexp.MustCompile(`^~[A-Za-z0-9._-]*$`)
 // stderr, because a host that stopped answering on its usual tier should keep
 // working, but not without the operator being able to see that it changed.
 func (s *Session) FileOps(ctx context.Context, t transport.Transport) (fileops.Selection, error) {
-	return s.FileOpsGuard(ctx, t, s.CheckManaged)
+	return s.FileOpsGuard(ctx, t, workspace.Protocol, s.CheckManaged)
 }
 
-// FileOpsGuard lets a connection invalidate all its channels on guard failure.
-func (s *Session) FileOpsGuard(ctx context.Context, t transport.Transport, check func(context.Context) error) (fileops.Selection, error) {
+// FileOpsGuard fixes the namespace at the trusted caller and lets a connection
+// invalidate all its channels on guard failure. Already mapped Guest paths must
+// never enter a Protocol strategy.
+func (s *Session) FileOpsGuard(ctx context.Context, t transport.Transport, namespace workspace.Namespace, check func(context.Context) error) (fileops.Selection, error) {
 	if err := check(ctx); err != nil {
 		return fileops.Selection{}, err
 	}
 	warn := func(msg string) { fmt.Fprintln(os.Stderr, msg) }
-	sel, err := fileops.New(ctx, s.Tier, t, s.Caps, s.Pinned, warn)
+	var sel fileops.Selection
+	var err error
+	if s.Managed != nil {
+		var m workspace.Mapper
+		m, err = s.PathMapper()
+		if err == nil {
+			sel.Ops, err = fileops.NewRooted(ctx, t, m, namespace, s.Managed.RecordSHA256, &s.rootBinding)
+			sel.Requested = s.Tier
+			sel.Effective = reach.TierHelper
+		}
+	} else {
+		sel, err = fileops.New(ctx, s.Tier, t, s.Caps, s.Pinned, warn)
+	}
 	if err == nil && s.Managed != nil {
 		sel.Ops = fileops.Guard(sel.Ops, check)
 	}
@@ -798,7 +855,7 @@ func (s *Session) probeWithTransport(ctx context.Context, t transport.Transport,
 	if err := check(ctx); err != nil {
 		return err
 	}
-	sel, err := fileops.New(ctx, s.Tier, t, s.Caps, s.Pinned, func(msg string) { fmt.Fprintln(os.Stderr, msg) })
+	sel, err := s.FileOpsGuard(ctx, t, workspace.Guest, check)
 	if err != nil {
 		return err
 	}
