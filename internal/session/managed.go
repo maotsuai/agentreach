@@ -112,12 +112,12 @@ func (s *Session) CheckControlPaths() error {
 	if err != nil {
 		return err
 	}
-	for _, rel := range []string{"", "sessions", "projects", "conf", "bin", "codex-home", "security", filepath.Join("security", s.Managed.ProjectID+".json"), filepath.Join("security", s.Managed.ProjectID+".json.lock"), filepath.Join("sessions", s.Name+".json"), filepath.Join("sessions", s.Name+".cwd"), filepath.Join("projects", s.Managed.ProjectID+".json"), filepath.Join("conf", s.Name+".claude-settings.json"), filepath.Join("codex-home", s.Name), filepath.Join("codex-home", s.Name, "auth.json"), filepath.Join("codex-home", s.Name, "config.toml"), filepath.Join("codex-home", s.Name, "environments.toml")} {
+	for _, rel := range []string{"", "sessions", "projects", "conf", "bin", "codex-home", "security", "terminals", filepath.Join("terminals", s.Managed.ProjectID+".json"), filepath.Join("terminals", s.Managed.ProjectID+".json.lock"), filepath.Join("security", s.Managed.ProjectID+".json"), filepath.Join("security", s.Managed.ProjectID+".json.lock"), filepath.Join("sessions", s.Name+".json"), filepath.Join("sessions", s.Name+".cwd"), filepath.Join("projects", s.Managed.ProjectID+".json"), filepath.Join("conf", s.Name+".claude-settings.json"), filepath.Join("codex-home", s.Name), filepath.Join("codex-home", s.Name, "auth.json"), filepath.Join("codex-home", s.Name, "config.toml"), filepath.Join("codex-home", s.Name, "environments.toml")} {
 		if err := hostpath.Canonical(filepath.Join(base, rel), true); err != nil {
 			return fmt.Errorf("policy_denied: unsafe managed control path: %w", err)
 		}
 	}
-	for _, rel := range []string{filepath.Join("security", s.Managed.ProjectID+".json"), filepath.Join("sessions", s.Name+".json"), filepath.Join("sessions", s.Name+".cwd"), filepath.Join("projects", s.Managed.ProjectID+".json"), filepath.Join("conf", s.Name+".claude-settings.json"), filepath.Join("codex-home", s.Name, "auth.json"), filepath.Join("codex-home", s.Name, "config.toml"), filepath.Join("codex-home", s.Name, "environments.toml")} {
+	for _, rel := range []string{filepath.Join("terminals", s.Managed.ProjectID+".json"), filepath.Join("security", s.Managed.ProjectID+".json"), filepath.Join("sessions", s.Name+".json"), filepath.Join("sessions", s.Name+".cwd"), filepath.Join("projects", s.Managed.ProjectID+".json"), filepath.Join("conf", s.Name+".claude-settings.json"), filepath.Join("codex-home", s.Name, "auth.json"), filepath.Join("codex-home", s.Name, "config.toml"), filepath.Join("codex-home", s.Name, "environments.toml")} {
 		if err := hostpath.PrivateFile(filepath.Join(base, rel)); err != nil {
 			return fmt.Errorf("policy_denied: unsafe managed control file: %w", err)
 		}

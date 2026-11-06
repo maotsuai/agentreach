@@ -173,6 +173,6 @@ func cmdHostBridge(ctx context.Context, args []string) error {
 	if e != nil {
 		return e
 	}
-	x := host.Executor{Store: p}
+	x := host.Executor{Store: p, OpenTerminals: s.Terminals}
 	return x.Serve(ctx, os.Stdin, os.Stdout)
 }

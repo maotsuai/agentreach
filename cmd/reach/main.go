@@ -26,6 +26,7 @@ SESSIONS
 	project register <config.json> | inspect <id>    managed OrbStack registration
   policy init|inspect|set|approve|revoke <project>  Host operator policy control
   host plan|execute|status <project>              typed Host request (JSON stdin)
+  --project ID terminal <op>                     persistent Guest text terminal (JSON stdin)
 	runtime inspect|health <id>                     read-only runtime checks
 	--project <id> claude|codex|exec|fs ...          use an approved project
   log [name]        what reach has run and changed on the target
@@ -138,7 +139,7 @@ var knownCommands = map[string]bool{
 	"claude": true, "codex": true, "kimi": true, "goose": true,
 	"gemini": true, "crush": true, "grok": true, "opencode": true,
 	"shell-prefix": true, "hook": true, "exec-server": true,
-	"project": true, "runtime": true, "--project": true, "policy": true, "host": true, "host-bridge": true,
+	"project": true, "runtime": true, "--project": true, "policy": true, "host": true, "host-bridge": true, "terminal": true,
 	"agent":   true,
 	"version": true, "--version": true, "-v": true,
 	"help": true, "--help": true, "-h": true,
@@ -171,6 +172,8 @@ func dispatch(ctx context.Context, args []string) int {
 		err = cmdPolicy(ctx, rest)
 	case "host":
 		err = cmdHost(ctx, rest)
+	case "terminal":
+		err = cmdTerminal(ctx, rest)
 	case "host-bridge":
 		err = cmdHostBridge(ctx, rest)
 	case "--project":

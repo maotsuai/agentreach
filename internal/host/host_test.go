@@ -246,7 +246,7 @@ func TestMCPOnlyFixedToolsAndStrictArguments(t *testing.T) {
 	if e := json.Unmarshal([]byte(lines[1]), &listed); e != nil {
 		t.Fatal(e)
 	}
-	if len(listed.Result.Tools) != 3 {
+	if len(listed.Result.Tools) != len(ToolNames) {
 		t.Fatal(lines[1])
 	}
 	for i, n := range ToolNames {

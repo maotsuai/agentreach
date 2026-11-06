@@ -1,6 +1,9 @@
 package harnessprobe
 
-import "strings"
+import (
+	"github.com/bojieli/agentreach/internal/terminal"
+	"strings"
+)
 
 // ManagedClaudeArgs is shared by strict probes and the real managed launcher.
 // Only the controlled settings may supply hooks, and only Bash is available.
@@ -12,6 +15,9 @@ func ManagedClaudeArgs(settings string, bridge ...string) []string {
 	args := []string{"--setting-sources", "", "--settings", settings, "--tools", "Bash", "--strict-mcp-config", "--mcp-config", config}
 	if len(bridge) > 0 {
 		args = append(args, "--allowedTools", "mcp__reach_host__host_plan", "mcp__reach_host__host_execute", "mcp__reach_host__host_status")
+		for _, name := range terminal.ToolNames {
+			args = append(args, "mcp__reach_host__"+name)
+		}
 	}
 	return args
 }

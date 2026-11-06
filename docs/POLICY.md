@@ -18,8 +18,7 @@ and network permissions; this policy is not an OS shell sandbox.
 
 Only the Host operator CLI can change policy or approve/revoke. Managed children
 are denied this entrypoint. The fixed MCP bridge advertises exactly
-`host_plan`, `host_execute`, `host_status`; it has no operator or arbitrary argv
-method. Its project/session/record binding comes from trusted configuration.
+`host_plan`, `host_execute`, `host_status` for Host capabilities, plus the nine fixed typed P3 Guest terminal tools documented in [TERMINALS.md](TERMINALS.md); it has no operator or arbitrary Host argv method. Its project/session/record binding comes from trusted configuration.
 Claude admits only the exact generated bridge callback through its shell
 prefix. Codex keeps `include_local=false`: its fixed MCP server selects the
 `reach` executor, where only the exact binary/argv/cwd/binding/env shape enters
@@ -27,7 +26,7 @@ an in-process typed MCP handler. No Host shell/program is spawned from that
 request. All ordinary process argv still use the Guest. MCP protocol frames
 are control traffic; effects requested through them use the same ledger.
 Codex marks this server required and grants transport-level approval only to
-these three tools; operator approval remains exclusively in reach policy.
+these fixed tools; operator approval remains exclusively in reach policy.
 Each MCP connection permanently retains its first runtime/identity guard
 failure, including for status calls. Restoring the resource requires a new
 connection. Ordinary policy, approval, clock and ledger rejections do not
@@ -86,7 +85,7 @@ operations, ordered events and a checksum. A bounded directory lock serializes
 writers across processes. Approval consumption and intent are a single atomic
 replacement, flushed as file → rename → containing directory before dispatch.
 The ledger is mandatory for CLI/Claude exec, Codex process start and stdin,
-managed write/mkdir/remove/rename/copy, including native patch file mutations.
+managed write/mkdir/remove/rename/copy, including native patch file mutations, and P3 terminal create/write/resize/interrupt/close.
 Each primitive mutation has its own intent/result; a multi-file patch is not an
 atomic filesystem transaction. Fixed internal handshakes and reads do not
 recursively create execution intents. Close and best-effort termination cleanup

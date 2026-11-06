@@ -5,14 +5,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/bojieli/agentreach/internal/terminal"
 	"io"
+	"strings"
 	"sync"
 
 	"github.com/bojieli/agentreach/internal/policy"
 )
 
 // ToolNames is the complete model-visible capability surface.
-var ToolNames = []string{"host_plan", "host_execute", "host_status"}
+var ToolNames = append([]string{"host_plan", "host_execute", "host_status"}, terminal.ToolNames...)
 
 func tool(name, description string, properties map[string]any, required []string) any {
 	return map[string]any{"name": name, "description": description, "inputSchema": map[string]any{"type": "object", "properties": properties, "required": required, "additionalProperties": false}}
@@ -23,11 +25,11 @@ func Tools() []any {
 	s := map[string]any{"type": "string"}
 	integer := map[string]any{"type": "integer", "minimum": 1}
 	params := map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"path": s, "service_id": s, "guest_port": integer, "host_port": map[string]any{"type": "integer", "minimum": 0}, "listen": s, "operation": s, "spec_digest": s}}
-	return []any{
+	return append([]any{
 		tool("host_plan", "Plan a typed Host capability; this does not execute or approve it.", map[string]any{"capability": s, "target_id": s, "generation": integer, "params": params}, []string{"capability", "target_id", "generation", "params"}),
 		tool("host_execute", "Execute an exact planned request with its operator approval, when required.", map[string]any{"request_id": s, "approval_id": s}, []string{"request_id"}),
 		tool("host_status", "Read project policy counts or the exact status of a request/operation.", map[string]any{"request_id": s, "operation_id": s}, []string{}),
-	}
+	}, terminal.Tools()...)
 }
 
 type call struct {
@@ -44,6 +46,16 @@ type executeArgs struct {
 
 // Call strictly decodes and routes a model request to the shared policy engine.
 func (e *Executor) Call(ctx context.Context, name string, b json.RawMessage) (any, error) {
+	if strings.HasPrefix(name, "terminal_") {
+		if e.Terminal == nil {
+			return nil, fmt.Errorf("unsupported: terminal manager unavailable")
+		}
+		q, err := terminal.DecodeRequest(b)
+		if err != nil {
+			return nil, err
+		}
+		return e.Terminal.Call(ctx, strings.TrimPrefix(name, "terminal_"), q)
+	}
 	switch name {
 	case "host_plan":
 		var h policy.HostRequest
@@ -106,9 +118,13 @@ func (e *Executor) Serve(ctx context.Context, in io.Reader, out io.Writer) error
 	// checks under the ledger lock. Only target guard failures latch.
 	var guardMu sync.Mutex
 	var guardFailure error
+	var terminals *terminal.Manager
 	ready := func(ctx context.Context) error {
 		guardMu.Lock()
 		defer guardMu.Unlock()
+		if guardFailure == nil && terminals != nil {
+			guardFailure = terminals.Failure()
+		}
 		if guardFailure == nil {
 			guardFailure = e.Store.CheckTarget(ctx)
 		}
@@ -116,6 +132,14 @@ func (e *Executor) Serve(ctx context.Context, in io.Reader, out io.Writer) error
 	}
 	connection := *e
 	connection.Store = e.Store.WithTargetCheck(ready)
+	if e.OpenTerminals != nil {
+		var err error
+		connection.Terminal, err = e.OpenTerminals(ready)
+		if err != nil {
+			return err
+		}
+	}
+	terminals = connection.Terminal
 	scan := bufio.NewScanner(in)
 	scan.Buffer(make([]byte, 4096), policy.MaxRequest+1)
 	enc := json.NewEncoder(out)
@@ -174,12 +198,16 @@ func (e *Executor) Serve(ctx context.Context, in io.Reader, out io.Writer) error
 			if err == nil {
 				var result any
 				err = ready(ctx)
-				if err == nil {
+				if err == nil || strings.HasPrefix(c.Name, "terminal_") {
 					result, err = connection.Call(ctx, c.Name, c.Arguments)
 				}
 				var msg string
 				if err != nil {
 					msg = err.Error()
+					if v, ok := result.(terminal.Result); ok {
+						b, _ := json.Marshal(map[string]any{"error": msg, "terminal": v})
+						msg = string(b)
+					}
 					if op, ok := result.(policy.Operation); ok && op.ID != "" {
 						b, _ := json.Marshal(map[string]any{"error": msg, "operation": op})
 						msg = string(b)

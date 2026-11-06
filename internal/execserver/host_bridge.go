@@ -95,7 +95,7 @@ func (s *Server) hostBridgeStream(p execParams) (transport.Stream, bool, error) 
 		return nil
 	}
 	go func() {
-		x := host.Executor{Store: store}
+		x := host.Executor{Store: store, OpenTerminals: s.sess.Terminals}
 		err := x.Serve(ctx, input, output)
 		code := 0
 		if err != nil {

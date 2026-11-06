@@ -26,8 +26,14 @@ func Canonical(p string, missing bool) error {
 			return err
 		}
 		// A dangling symlink is not a missing directory.
-		if _, statErr := os.Lstat(p); statErr == nil {
-			return fmt.Errorf("unresolvable path: %s", p)
+		if fi, statErr := os.Lstat(p); statErr == nil {
+			if fi.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("unresolvable path: %s", p)
+			}
+			// A normal leaf can appear after EvalSymlinks reports ENOENT (for
+			// example an independently acquired directory lock). It does not
+			// redirect resolution; still verify every existing ancestor below.
+
 		} else if !os.IsNotExist(statErr) {
 			return statErr
 		}

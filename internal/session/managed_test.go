@@ -63,7 +63,7 @@ func TestDanglingSessionLinkIsCorruptionAndCannotBeOverwritten(t *testing.T) {
 }
 
 func TestManagedControlDescendantSymlinksAreRefusedBeforeWrite(t *testing.T) {
-	for _, rel := range []string{"sessions", "projects", "conf", "codex-home", filepath.Join("codex-home", "guarded"), filepath.Join("conf", "guarded.claude-settings.json")} {
+	for _, rel := range []string{"sessions", "projects", "conf", "terminals", filepath.Join("terminals", "demo.json"), filepath.Join("terminals", "demo.json.lock"), "codex-home", filepath.Join("codex-home", "guarded"), filepath.Join("conf", "guarded.claude-settings.json")} {
 		t.Run(rel, func(t *testing.T) {
 			base := canonicalTempDir(t)
 			t.Setenv("REACH_HOME", base)
@@ -89,7 +89,7 @@ func TestManagedControlDescendantSymlinksAreRefusedBeforeWrite(t *testing.T) {
 }
 
 func TestManagedControlHardlinkCannotShareAuthOrSettingsWithGuest(t *testing.T) {
-	for _, rel := range []string{filepath.Join("codex-home", "guarded", "auth.json"), filepath.Join("conf", "guarded.claude-settings.json")} {
+	for _, rel := range []string{filepath.Join("terminals", "demo.json"), filepath.Join("codex-home", "guarded", "auth.json"), filepath.Join("conf", "guarded.claude-settings.json")} {
 		t.Run(rel, func(t *testing.T) {
 			base := canonicalTempDir(t)
 			t.Setenv("REACH_HOME", base)

@@ -72,3 +72,34 @@ func canonicalTempDir(t *testing.T) string {
 	}
 	return resolved
 }
+
+func TestCanonicalMissingSuffixMayAppearOrDisappearConcurrently(t *testing.T) {
+	root := canonicalTempDir(t)
+	p := filepath.Join(root, "transient.lock")
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if e := os.Mkdir(p, 0700); e != nil {
+				t.Error(e)
+				return
+			}
+			if e := os.Remove(p); e != nil {
+				t.Error(e)
+				return
+			}
+		}
+	}()
+	defer func() { close(stop); <-done }()
+	for range 2000 {
+		if e := Canonical(p, true); e != nil {
+			t.Fatal(e)
+		}
+	}
+}

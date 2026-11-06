@@ -25,11 +25,13 @@ import (
 	"errors"
 	"fmt"
 	"github.com/bojieli/agentreach/internal/rooted"
+	"github.com/bojieli/agentreach/internal/terminalguest"
 	"io"
 	"os"
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 )
 
 // version is stamped at build time. For the unmanaged helper tier it is part
@@ -43,6 +45,27 @@ const (
 )
 
 func main() {
+	if len(os.Args) > 1 && strings.HasPrefix(os.Args[1], "terminal-") {
+		var err error
+		switch {
+		case os.Args[1] == "terminal-call" && len(os.Args) == 2:
+			err = terminalguest.Call(os.Stdin, os.Stdout)
+		case os.Args[1] == "terminal-collect" && len(os.Args) == 3:
+			err = terminalguest.Collect(os.Args[2])
+		case os.Args[1] == "terminal-pane" && len(os.Args) == 4:
+			err = terminalguest.Pane(os.Args[2], os.Args[3])
+		case os.Args[1] == "terminal-exited" && len(os.Args) == 4:
+			err = terminalguest.Exited(os.Args[2], os.Args[3])
+		default:
+			err = fmt.Errorf("invalid terminal helper arguments")
+		}
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "reach-helper:", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	if len(os.Args) > 1 && os.Args[1] == "report-cwd" {
 		if len(os.Args) != 3 {
 			fmt.Fprintln(os.Stderr, "reach-helper: invalid cwd report arguments")

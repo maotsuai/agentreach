@@ -98,18 +98,24 @@ func managedSession(ctx context.Context, id string) (*session.Session, error) {
 }
 func runProject(ctx context.Context, args []string) int {
 	if len(args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: reach --project <id> claude|codex|exec|fs [args...]")
+		fmt.Fprintln(os.Stderr, "usage: reach --project <id> claude|codex|exec|fs|terminal [args...]")
 		return 2
 	}
-	if args[1] != "claude" && args[1] != "codex" && args[1] != "exec" && args[1] != "fs" {
-		fmt.Fprintln(os.Stderr, "policy_denied: managed projects support only claude, codex, exec and fs")
+	if args[1] != "claude" && args[1] != "codex" && args[1] != "exec" && args[1] != "fs" && args[1] != "terminal" {
+		fmt.Fprintln(os.Stderr, "policy_denied: managed projects support only claude, codex, exec, fs and terminal")
 		return 2
 	}
 	if err := checkProjectSessionOverride(args[2:]); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
-	s, err := managedSession(ctx, args[0])
+	var s *session.Session
+	var err error
+	if args[1] == "terminal" {
+		s, err = managedTerminalSession(ctx, args[0], len(args) > 2 && args[2] == "create")
+	} else {
+		s, err = managedSession(ctx, args[0])
+	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "reach:", err)
 		return 1
@@ -147,4 +153,27 @@ func managedSessionName(id string) string {
 	}
 	h := sha256.Sum256([]byte(id))
 	return name[:47] + "-" + hex.EncodeToString(h[:8])
+}
+
+// Terminal observations must reach their manager even when a saved runtime generation is lost.
+// The manager performs the same guard before any Guest dispatch and can retain a typed lost result.
+func managedTerminalSession(ctx context.Context, id string, bootstrap bool) (*session.Session, error) {
+	r, e := project.Load(id)
+	if e != nil {
+		return nil, e
+	}
+	s, e := session.Load(managedSessionName(id))
+	if errors.Is(e, os.ErrNotExist) {
+		if !bootstrap {
+			return nil, fmt.Errorf("resource_lost: no managed session; create a terminal first")
+		}
+		return managedSession(ctx, id)
+	}
+	if e != nil {
+		return nil, e
+	}
+	if s.Managed == nil || *s.Managed != *session.Bind(r) {
+		return nil, fmt.Errorf("identity_changed: terminal session binding")
+	}
+	return s, nil
 }

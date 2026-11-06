@@ -11,6 +11,7 @@ import (
 	"strconv"
 
 	"github.com/bojieli/agentreach/internal/policy"
+	"github.com/bojieli/agentreach/internal/terminal"
 )
 
 // Exposure is a trusted registry observation, never a model-provided origin.
@@ -25,7 +26,9 @@ type Exposure struct {
 
 // Executor dispatches typed Host effects after durable authorisation.
 type Executor struct {
-	Store *policy.Store
+	Store         *policy.Store
+	Terminal      *terminal.Manager
+	OpenTerminals func(func(context.Context) error) (*terminal.Manager, error)
 	// Only trusted P4 code may supply a registry. Production P2 leaves it nil.
 	Resolve func(context.Context, string) (Exposure, error)
 	launch  func(context.Context, string) error

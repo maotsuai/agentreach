@@ -235,7 +235,7 @@ func intent(l *Ledger, n Stamp, op Operation) error {
 // The caller retains exactly that immutable payload through dispatch.
 func (s *Store) BeginGuest(ctx context.Context, capability string, payload any) (Operation, error) {
 	var op Operation
-	if capability != "guest.exec" && capability != "guest.process_start" && capability != "guest.stdin" && capability != "guest.write" && capability != "guest.mkdir" && capability != "guest.remove" && capability != "guest.rename" && capability != "guest.copy" {
+	if capability != "guest.exec" && capability != "guest.process_start" && capability != "guest.stdin" && capability != "guest.write" && capability != "guest.mkdir" && capability != "guest.remove" && capability != "guest.rename" && capability != "guest.copy" && capability != "guest.terminal_create" && capability != "guest.terminal_write" && capability != "guest.terminal_resize" && capability != "guest.terminal_interrupt" && capability != "guest.terminal_close" {
 		return op, fail("policy_denied: unknown Guest effect")
 	}
 	e := s.transaction(ctx, func(l *Ledger, n Stamp) error {
