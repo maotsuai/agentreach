@@ -1,4 +1,4 @@
-# Managed OrbStack projects (P0 + P1 + P2 + P3)
+# Managed OrbStack projects (P0 + P1 + P2 + P3 + P4)
 
 Managed projects add an explicit Host authorization around an **existing**
 OrbStack Docker container. Ordinary SSH, local, Docker and Podman sessions keep
@@ -316,6 +316,13 @@ OS shell sandbox or isolation from hostile same-UID Guest processes.
 
 P3 adds `reach --project PROJECT terminal create|write|read|resize|interrupt|inspect|list|attach|close` with strict JSON stdin, plus the corresponding nine fixed Guest MCP tools. Prepare the current Linux helper and tested tmux 3.3a explicitly. Terminal IDs, input IDs, byte cursors, budgets and unknown/close/restart semantics are documented in [TERMINALS.md](TERMINALS.md). This is separate from the existing exec-server `tty`/signal contract.
 
+## Services and loopback ports
+
+P4 adds separate non-interactive services and controlled loopback publications;
+see [SERVICES.md](SERVICES.md) for the typed CLI/MCP and approval workflow. The
+existing project/container binding remains immutable; service creation is an
+explicit P4 action rather than a side effect of runtime health or registration.
+
 ## Validation and limits
 
 `make check` runs vet plus race tests; `make lint` and normal/cross builds are
@@ -382,9 +389,11 @@ OrbStack's Guest IP/`.orb.local` routes and LAN reachability require separate
 network validation. An image ID does not prove an unchanged writable rootfs.
 The Host user can bypass reach and run Docker directly. P2 adds mandatory
 security intent/result, explicit policy initialization and typed Host planning,
-approval and revocation; see [POLICY.md](POLICY.md). Production `open_url` still
-returns `exposure_unavailable` without P4, and port/service/runtime drivers are
-unsupported. P3 adds separate persistent text terminals through typed CLI/MCP operations; see [TERMINALS.md](TERMINALS.md). Reconciliation remains later work.
+approval and revocation; see [POLICY.md](POLICY.md). P4 supplies the production
+service/exposure registry, controlled sidecar changes and dynamic loopback proxy;
+see [SERVICES.md](SERVICES.md). Missing or unhealthy exposures are refused.
+`runtime_change` and automatic reconciliation remain later work. P3 persistent
+text terminals retain their separate [TERMINALS.md](TERMINALS.md) contract.
 
 To roll back code, revert the phase commit and retain records/resources. An older
 binary must refuse new session schemas; do not force it to rewrite managed state.

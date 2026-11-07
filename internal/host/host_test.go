@@ -65,6 +65,22 @@ func TestMCPRuntimeFailureLatchesOnlyThisConnection(t *testing.T) {
 	}
 }
 
+func TestMCPBoundsEscapedWireResponseAndRetainsIDs(t *testing.T) {
+	id := strings.Repeat("a", 32)
+	response := map[string]any{"jsonrpc": "2.0", "id": 1, "result": map[string]any{"content": strings.Repeat("\"\\\n", 32<<10)}}
+	b, e := boundedResponse(response, map[string]any{"operation_id": id, "service_id": strings.Repeat("b", 32)})
+	if e != nil || len(b) > policy.MaxRequest || !json.Valid(bytes.TrimSpace(b)) || !bytes.Contains(b, []byte(id)) || !bytes.Contains(b, []byte("response_budget:")) {
+		t.Fatal(len(b), string(b), e)
+	}
+	s, _ := setup(t)
+	x := Executor{Store: s}
+	frame, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": strings.Repeat("x", 1024), "method": "tools/list", "params": map[string]any{}})
+	var out bytes.Buffer
+	if e = x.Serve(context.Background(), bytes.NewReader(append(frame, '\n')), &out); e == nil || !strings.Contains(e.Error(), "MCP request ID") || out.Len() != 0 {
+		t.Fatal("oversized ID accepted", e, out.Len())
+	}
+}
+
 func TestMCPPolicyDenialDoesNotLatchTarget(t *testing.T) {
 	s, _ := setup(t)
 	x := Executor{Store: s}

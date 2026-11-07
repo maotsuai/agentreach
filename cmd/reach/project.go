@@ -101,7 +101,7 @@ func runProject(ctx context.Context, args []string) int {
 		fmt.Fprintln(os.Stderr, "usage: reach --project <id> claude|codex|exec|fs|terminal [args...]")
 		return 2
 	}
-	if args[1] != "claude" && args[1] != "codex" && args[1] != "exec" && args[1] != "fs" && args[1] != "terminal" {
+	if args[1] != "claude" && args[1] != "codex" && args[1] != "exec" && args[1] != "fs" && args[1] != "terminal" && args[1] != "service" && args[1] != "port" {
 		fmt.Fprintln(os.Stderr, "policy_denied: managed projects support only claude, codex, exec, fs and terminal")
 		return 2
 	}
@@ -111,8 +111,8 @@ func runProject(ctx context.Context, args []string) int {
 	}
 	var s *session.Session
 	var err error
-	if args[1] == "terminal" {
-		s, err = managedTerminalSession(ctx, args[0], len(args) > 2 && args[2] == "create")
+	if args[1] == "terminal" || args[1] == "service" || args[1] == "port" {
+		s, err = managedTerminalSession(ctx, args[0], len(args) > 2 && (args[2] == "create" || args[2] == "plan" || args[2] == "start"))
 	} else {
 		s, err = managedSession(ctx, args[0])
 	}

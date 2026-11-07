@@ -107,7 +107,7 @@ func (g *Guard) storage(ctx context.Context) error {
 	protected := []string{s.EngineDataPath, control, s.Docker.CLI, s.Docker.ConfigDir, s.OrbStackConfig}
 	// Existing control subdirectories and files must not redirect later state,
 	// auth or settings writes through a symlink into a Guest-writable bind.
-	for _, part := range []string{"sessions", "projects", "conf", "bin", "codex-home", "security", "terminals"} {
+	for _, part := range []string{"sessions", "projects", "conf", "bin", "codex-home", "security", "terminals", "services", "ports", "service-backends"} {
 		protected = append(protected, filepath.Join(control, part))
 	}
 	for _, p := range protected {

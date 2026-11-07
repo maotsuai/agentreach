@@ -22,6 +22,9 @@ import (
 
 // Terminals creates a fresh connection while retaining the immutable project and backend identities.
 func (s *Session) Terminals(check func(context.Context) error) (*terminal.Manager, error) {
+	return s.terminals(check, "")
+}
+func (s *Session) terminals(check func(context.Context) error, storeBase string) (*terminal.Manager, error) {
 	r, e := s.ManagedProject()
 	if e != nil {
 		return nil, e
@@ -29,6 +32,9 @@ func (s *Session) Terminals(check func(context.Context) error) (*terminal.Manage
 	base, e := project.Home()
 	if e != nil {
 		return nil, e
+	}
+	if storeBase != "" {
+		base = storeBase
 	}
 	p, e := s.Policy(check)
 	if e != nil {

@@ -18,7 +18,11 @@ and network permissions; this policy is not an OS shell sandbox.
 
 Only the Host operator CLI can change policy or approve/revoke. Managed children
 are denied this entrypoint. The fixed MCP bridge advertises exactly
-`host_plan`, `host_execute`, `host_status` for Host capabilities, plus the nine fixed typed P3 Guest terminal tools documented in [TERMINALS.md](TERMINALS.md); it has no operator or arbitrary Host argv method. Its project/session/record binding comes from trusted configuration.
+`host_plan`, `host_execute`, `host_status` for Host capabilities, the nine fixed
+typed P3 Guest terminal tools in [TERMINALS.md](TERMINALS.md), and the eight P4
+service/port tools in [SERVICES.md](SERVICES.md): 20 tools in total. It has no
+operator or arbitrary Host argv method. Its project/session/record binding comes
+from trusted configuration.
 Claude admits only the exact generated bridge callback through its shell
 prefix. Codex keeps `include_local=false`: its fixed MCP server selects the
 `reach` executor, where only the exact binary/argv/cwd/binding/env shape enters
@@ -66,11 +70,19 @@ rejects URL origins, query/fragment, control characters, backslashes, traversal
 and encoded authority changes. The executor constructs a loopback URL from a
 healthy, same-binding registry observation, checks it again before dispatch and
 uses fixed `/usr/bin/open` argv on macOS. Browser navigation after opening is
-outside this guarantee. P2 has no production P4 exposure registry, so production
-execute returns `exposure_unavailable`. Port/service/runtime drivers return
-`unsupported`. These rejections happen before consumption/intent. Successful
-browser dispatch is verified only with a trusted registry/executor injected in
-tests; there is no model-accessible bypass or test-mode environment variable.
+outside this guarantee. P4 supplies the production registry from exact service
+and listener identities. Missing, unhealthy, retired or foreign exposures return
+`exposure_unavailable`. `service_change` and `port_expose` execute only their
+retained typed specifications; `runtime_change` remains `unsupported` pending
+later reconciliation work. There is no model-accessible bypass or test-mode
+environment variable. Real fixed-harness/browser acceptance and separate LAN
+limitations are recorded in [validation/P4.md](validation/P4.md).
+
+Dynamic exposure creation and pre-dial checks require application readiness.
+The post-dial check withholds payload until the complete target identity is
+confirmed; established-stream monitoring checks identity without making HTTP
+health requests against a backend awaiting the proxied request. Authorization
+revocation is monitored independently and closes established streams.
 
 `host_status {}` returns policy and retention counts. Supply exactly one
 `request_id` or `operation_id` for its detailed status. It never returns the
@@ -85,7 +97,10 @@ operations, ordered events and a checksum. A bounded directory lock serializes
 writers across processes. Approval consumption and intent are a single atomic
 replacement, flushed as file → rename → containing directory before dispatch.
 The ledger is mandatory for CLI/Claude exec, Codex process start and stdin,
-managed write/mkdir/remove/rename/copy, including native patch file mutations, and P3 terminal create/write/resize/interrupt/close.
+managed write/mkdir/remove/rename/copy, including native patch file mutations,
+P3 terminal create/write/resize/interrupt/close, P4 workspace service start/stop,
+sidecar changes and dynamic listener expose/close. Guest service receipts retain
+typed service ID/generation; the complete parameters remain privately HMACed.
 Each primitive mutation has its own intent/result; a multi-file patch is not an
 atomic filesystem transaction. Fixed internal handshakes and reads do not
 recursively create execution intents. Close and best-effort termination cleanup

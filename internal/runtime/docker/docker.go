@@ -2,12 +2,15 @@
 package docker
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -44,17 +47,47 @@ type Client struct {
 
 // Command invokes a fixed executable directly, without a Host shell.
 func Command(ctx context.Context, cli string, args, env []string) ([]byte, error) {
+	return commandInDir(ctx, cli, args, env, "")
+}
+func commandInDir(ctx context.Context, cli string, args, env []string, dir string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, cli, args...)
+	cmd.Dir = dir
 	// OrbStack's resolved docker-tools is a multicall executable; selecting its
 	// Docker entrypoint must not depend on a mutable symlink or basename.
 	cmd.Args[0] = "docker"
 	cmd.Env = env
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return out, Fail("engine_unavailable", "%v: %s", err, strings.TrimSpace(string(out)))
+	var out boundedOutput
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	err := cmd.Run()
+	if out.full {
+		return out.Bytes(), Fail("request_budget", "Docker output exceeds 8 MiB")
 	}
-	return out, nil
+	if err != nil {
+		return out.Bytes(), Fail("engine_unavailable", "%v: %s", err, strings.TrimSpace(out.String()))
+	}
+	return out.Bytes(), nil
 }
+
+type boundedOutput struct {
+	bytes.Buffer
+	full bool
+}
+
+func (b *boundedOutput) Write(p []byte) (int, error) {
+	n := len(p)
+	remain := (8 << 20) - b.Len()
+	if n > remain {
+		b.full = true
+		p = p[:remain]
+	}
+	if _, e := b.Buffer.Write(p); e != nil {
+		return 0, e
+	}
+	return n, nil
+}
+
+var _ io.Writer = (*boundedOutput)(nil)
 
 // Validate requires resolved trusted executable and directory paths.
 func (c Connection) Validate() error {
@@ -98,6 +131,9 @@ func (c Connection) Environment() ([]string, error) {
 }
 
 func (c *Client) command(ctx context.Context, pinned bool, args ...string) ([]byte, error) {
+	return c.commandAt(ctx, pinned, c.Connection.ConfigDir, args...)
+}
+func (c *Client) commandAt(ctx context.Context, pinned bool, dir string, args ...string) ([]byte, error) {
 	env, err := c.Connection.Environment()
 	if err != nil {
 		return nil, err
@@ -109,7 +145,7 @@ func (c *Client) command(ctx context.Context, pinned bool, args ...string) ([]by
 	argv = append(argv, args...)
 	run := c.Run
 	if run == nil {
-		run = Command
+		return commandInDir(ctx, c.Connection.CLI, argv, env, dir)
 	}
 	return run(ctx, c.Connection.CLI, argv, env)
 }
@@ -221,8 +257,13 @@ type Volume struct {
 	Labels  map[string]string
 }
 
+var volumeNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,254}$`)
+
 // Volume inspects a named volume without creating it.
 func (c *Client) Volume(ctx context.Context, name string) (Volume, error) {
+	if !volumeNamePattern.MatchString(name) {
+		return Volume{}, Fail("policy_denied", "invalid volume identity")
+	}
 	out, err := c.command(ctx, true, "volume", "inspect", name)
 	if err != nil {
 		return Volume{}, err

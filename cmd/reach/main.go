@@ -140,6 +140,7 @@ var knownCommands = map[string]bool{
 	"gemini": true, "crush": true, "grok": true, "opencode": true,
 	"shell-prefix": true, "hook": true, "exec-server": true,
 	"project": true, "runtime": true, "--project": true, "policy": true, "host": true, "host-bridge": true, "terminal": true,
+	"service": true, "port": true, "hostd": true,
 	"agent":   true,
 	"version": true, "--version": true, "-v": true,
 	"help": true, "--help": true, "-h": true,
@@ -174,6 +175,12 @@ func dispatch(ctx context.Context, args []string) int {
 		err = cmdHost(ctx, rest)
 	case "terminal":
 		err = cmdTerminal(ctx, rest)
+	case "service":
+		err = cmdService(ctx, rest, false)
+	case "port":
+		err = cmdService(ctx, rest, true)
+	case "hostd":
+		err = cmdHostd(ctx, rest)
 	case "host-bridge":
 		err = cmdHostBridge(ctx, rest)
 	case "--project":

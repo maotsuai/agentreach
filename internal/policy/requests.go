@@ -63,6 +63,12 @@ func normalise(h HostRequest) (HostRequest, string, error) {
 		h.Params.Path = path
 		return h, "open_loopback_browser", nil
 	case "port_expose":
+		if p.Operation == "close" {
+			if p.Path != "" || p.SpecDigest != "" || !idPattern.MatchString(p.ServiceID) || !idPattern.MatchString(h.TargetID) || p.GuestPort != 0 || p.HostPort != 0 || p.Listen != "127.0.0.1" {
+				return h, "", fail("policy_denied: invalid exposure close parameters")
+			}
+			return h, "close_loopback_exposure", nil
+		}
 		if p.Path != "" || p.Operation != "" || p.SpecDigest != "" || p.ServiceID != h.TargetID || p.GuestPort == 0 || p.Listen != "127.0.0.1" {
 			return h, "", fail("policy_denied: invalid port exposure parameters")
 		}
@@ -234,8 +240,24 @@ func intent(l *Ledger, n Stamp, op Operation) error {
 // BeginGuest stores only a keyed digest of the complete execution parameters.
 // The caller retains exactly that immutable payload through dispatch.
 func (s *Store) BeginGuest(ctx context.Context, capability string, payload any) (Operation, error) {
+	return s.beginGuest(ctx, capability, payload, "", 0)
+}
+
+// BeginGuestResource journals a service identity as typed metadata while keeping
+// its complete parameters private. Only fixed P4 Guest capabilities use it.
+func (s *Store) BeginGuestResource(ctx context.Context, capability string, payload any, target string, generation uint64) (Operation, error) {
+	if capability != "guest.service_start" && capability != "guest.service_stop" || !idPattern.MatchString(target) || generation == 0 {
+		return Operation{}, fail("policy_denied: invalid Guest service scope")
+	}
+	return s.beginGuest(ctx, capability, struct {
+		Target     string
+		Generation uint64
+		Parameters any
+	}{target, generation, payload}, target, generation)
+}
+func (s *Store) beginGuest(ctx context.Context, capability string, payload any, target string, generation uint64) (Operation, error) {
 	var op Operation
-	if capability != "guest.exec" && capability != "guest.process_start" && capability != "guest.stdin" && capability != "guest.write" && capability != "guest.mkdir" && capability != "guest.remove" && capability != "guest.rename" && capability != "guest.copy" && capability != "guest.terminal_create" && capability != "guest.terminal_write" && capability != "guest.terminal_resize" && capability != "guest.terminal_interrupt" && capability != "guest.terminal_close" {
+	if capability != "guest.exec" && capability != "guest.process_start" && capability != "guest.stdin" && capability != "guest.write" && capability != "guest.mkdir" && capability != "guest.remove" && capability != "guest.rename" && capability != "guest.copy" && capability != "guest.terminal_create" && capability != "guest.terminal_write" && capability != "guest.terminal_resize" && capability != "guest.terminal_interrupt" && capability != "guest.terminal_close" && capability != "guest.service_start" && capability != "guest.service_stop" {
 		return op, fail("policy_denied: unknown Guest effect")
 	}
 	e := s.transaction(ctx, func(l *Ledger, n Stamp) error {
@@ -254,7 +276,11 @@ func (s *Store) BeginGuest(ctx context.Context, capability string, payload any) 
 		if e = s.check(ctx); e != nil {
 			return e
 		}
-		op = Operation{ID: newID(), Digest: d, Capability: capability, Actor: "guest", Revision: l.Revision, TargetID: l.Binding.ProjectID, Generation: l.Binding.Generation, Outcome: "intent"}
+		if target == "" {
+			target = l.Binding.ProjectID
+			generation = l.Binding.Generation
+		}
+		op = Operation{ID: newID(), Digest: d, Capability: capability, Actor: "guest", Revision: l.Revision, TargetID: target, Generation: generation, Outcome: "intent"}
 		return intent(l, n, op)
 	})
 	return op, e

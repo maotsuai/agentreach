@@ -36,6 +36,24 @@ func must(t *testing.T, e error) {
 		t.Fatal(e)
 	}
 }
+func TestGuestServiceScopeRetainsIdentityWithoutPayload(t *testing.T) {
+	s, _ := fixture(t)
+	id := strings.Repeat("b", 32)
+	op, e := s.BeginGuestResource(context.Background(), "guest.service_start", map[string]string{"argv": "private-service-command"}, id, 2)
+	must(t, e)
+	if op.TargetID != id || op.Generation != 2 {
+		t.Fatal(op)
+	}
+	v, e := s.Inspect()
+	must(t, e)
+	b, e := json.Marshal(v)
+	must(t, e)
+	if strings.Contains(string(b), "private-service-command") {
+		t.Fatal("Guest service payload leaked")
+	}
+	_, e = s.BeginGuestResource(context.Background(), "guest.exec", "x", id, 1)
+	want(t, e, "policy_denied")
+}
 func want(t *testing.T, e error, code string) {
 	t.Helper()
 	if e == nil || !strings.Contains(e.Error(), code) {

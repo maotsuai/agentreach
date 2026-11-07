@@ -11,10 +11,11 @@ import (
 	"sync"
 
 	"github.com/bojieli/agentreach/internal/policy"
+	"github.com/bojieli/agentreach/internal/service"
 )
 
 // ToolNames is the complete model-visible capability surface.
-var ToolNames = append([]string{"host_plan", "host_execute", "host_status"}, terminal.ToolNames...)
+var ToolNames = append(append([]string{"host_plan", "host_execute", "host_status"}, terminal.ToolNames...), service.ToolNames...)
 
 func tool(name, description string, properties map[string]any, required []string) any {
 	return map[string]any{"name": name, "description": description, "inputSchema": map[string]any{"type": "object", "properties": properties, "required": required, "additionalProperties": false}}
@@ -25,11 +26,11 @@ func Tools() []any {
 	s := map[string]any{"type": "string"}
 	integer := map[string]any{"type": "integer", "minimum": 1}
 	params := map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{"path": s, "service_id": s, "guest_port": integer, "host_port": map[string]any{"type": "integer", "minimum": 0}, "listen": s, "operation": s, "spec_digest": s}}
-	return append([]any{
+	return append(append([]any{
 		tool("host_plan", "Plan a typed Host capability; this does not execute or approve it.", map[string]any{"capability": s, "target_id": s, "generation": integer, "params": params}, []string{"capability", "target_id", "generation", "params"}),
 		tool("host_execute", "Execute an exact planned request with its operator approval, when required.", map[string]any{"request_id": s, "approval_id": s}, []string{"request_id"}),
 		tool("host_status", "Read project policy counts or the exact status of a request/operation.", map[string]any{"request_id": s, "operation_id": s}, []string{}),
-	}, terminal.Tools()...)
+	}, terminal.Tools()...), service.Tools()...)
 }
 
 type call struct {
@@ -46,6 +47,32 @@ type executeArgs struct {
 
 // Call strictly decodes and routes a model request to the shared policy engine.
 func (e *Executor) Call(ctx context.Context, name string, b json.RawMessage) (any, error) {
+	if strings.HasPrefix(name, "service_") || strings.HasPrefix(name, "port_") {
+		if e.Services == nil {
+			return nil, fmt.Errorf("unsupported: service manager unavailable")
+		}
+		if name == "port_list" {
+			var q struct{}
+			if err := policy.VerifyEncoded(b, &q); err != nil {
+				return nil, err
+			}
+			return e.Services.Exposures(ctx)
+		}
+		if name == "port_inspect" {
+			var q struct {
+				ID string `json:"exposure_id"`
+			}
+			if err := policy.VerifyEncoded(b, &q); err != nil {
+				return nil, err
+			}
+			return e.Services.Exposure(ctx, q.ID)
+		}
+		q, err := service.Decode(b)
+		if err != nil {
+			return nil, err
+		}
+		return e.Services.Call(ctx, strings.TrimPrefix(name, "service_"), q)
+	}
 	if strings.HasPrefix(name, "terminal_") {
 		if e.Terminal == nil {
 			return nil, fmt.Errorf("unsupported: terminal manager unavailable")
@@ -119,11 +146,15 @@ func (e *Executor) Serve(ctx context.Context, in io.Reader, out io.Writer) error
 	var guardMu sync.Mutex
 	var guardFailure error
 	var terminals *terminal.Manager
+	var services *service.Manager
 	ready := func(ctx context.Context) error {
 		guardMu.Lock()
 		defer guardMu.Unlock()
 		if guardFailure == nil && terminals != nil {
 			guardFailure = terminals.Failure()
+		}
+		if guardFailure == nil && services != nil {
+			guardFailure = services.Failure()
 		}
 		if guardFailure == nil {
 			guardFailure = e.Store.CheckTarget(ctx)
@@ -140,9 +171,19 @@ func (e *Executor) Serve(ctx context.Context, in io.Reader, out io.Writer) error
 		}
 	}
 	terminals = connection.Terminal
+	if e.OpenServices != nil {
+		var err error
+		connection.Services, err = e.OpenServices(ready)
+		if err != nil {
+			return err
+		}
+	}
+	services = connection.Services
+	if services != nil && connection.Resolve == nil {
+		connection.Resolve = ServiceResolver(services)
+	}
 	scan := bufio.NewScanner(in)
 	scan.Buffer(make([]byte, 4096), policy.MaxRequest+1)
-	enc := json.NewEncoder(out)
 	initialized := false
 	for scan.Scan() {
 		var r struct {
@@ -157,6 +198,9 @@ func (e *Executor) Serve(ctx context.Context, in io.Reader, out io.Writer) error
 		if r.JSONRPC != "2.0" {
 			return fmt.Errorf("invalid MCP version")
 		}
+		if len(r.ID) > 256 {
+			return fmt.Errorf("request_budget: MCP request ID")
+		}
 		if len(r.ID) == 0 {
 			if r.Method == "notifications/initialized" && initialized {
 				continue
@@ -164,6 +208,7 @@ func (e *Executor) Serve(ctx context.Context, in io.Reader, out io.Writer) error
 			return fmt.Errorf("unsupported MCP notification")
 		}
 		var value any
+		identities := map[string]any{}
 		var err error
 		switch r.Method {
 		case "initialize":
@@ -198,8 +243,22 @@ func (e *Executor) Serve(ctx context.Context, in io.Reader, out io.Writer) error
 			if err == nil {
 				var result any
 				err = ready(ctx)
-				if err == nil || strings.HasPrefix(c.Name, "terminal_") {
+				if err == nil || strings.HasPrefix(c.Name, "terminal_") || strings.HasPrefix(c.Name, "service_") {
 					result, err = connection.Call(ctx, c.Name, c.Arguments)
+				}
+				switch v := result.(type) {
+				case policy.Operation:
+					identities["operation_id"] = v.ID
+				case policy.Pending:
+					identities["request_id"] = v.ID
+				case service.Result:
+					if v.Service != nil {
+						identities["service_id"] = v.Service.ID
+						identities["operation_id"] = v.Service.OperationID
+					}
+				case terminal.Result:
+					identities["terminal_id"] = v.TerminalID
+					identities["operation_id"] = v.OperationID
 				}
 				var msg string
 				if err != nil {
@@ -210,6 +269,10 @@ func (e *Executor) Serve(ctx context.Context, in io.Reader, out io.Writer) error
 					}
 					if op, ok := result.(policy.Operation); ok && op.ID != "" {
 						b, _ := json.Marshal(map[string]any{"error": msg, "operation": op})
+						msg = string(b)
+					}
+					if v, ok := result.(service.Result); ok {
+						b, _ := json.Marshal(map[string]any{"error": msg, "service": v})
 						msg = string(b)
 					}
 				} else {
@@ -228,9 +291,42 @@ func (e *Executor) Serve(ctx context.Context, in io.Reader, out io.Writer) error
 		} else {
 			response["result"] = value
 		}
-		if err = enc.Encode(response); err != nil {
+		frame, encodeErr := boundedResponse(response, identities)
+		if encodeErr != nil {
+			return encodeErr
+		}
+		if _, err = out.Write(frame); err != nil {
 			return err
 		}
 	}
 	return scan.Err()
+}
+
+// Bound the actual wire frame after both layers of JSON escaping. A successful
+// dispatch may already be journalled: keep its identifiers for status/inspect,
+// never truncate data or suggest that retrying the mutation is safe.
+func boundedResponse(response map[string]any, identities map[string]any) ([]byte, error) {
+	b, e := json.Marshal(response)
+	if e != nil {
+		return nil, e
+	}
+	if len(b)+1 > policy.MaxRequest {
+		compact := map[string]any{"error": "response_budget: full response unavailable; inspect retained identifiers before any further action"}
+		for k, v := range identities {
+			compact[k] = v
+		}
+		msg, e := json.Marshal(compact)
+		if e != nil {
+			return nil, e
+		}
+		response = map[string]any{"jsonrpc": "2.0", "id": response["id"], "result": map[string]any{"content": []any{map[string]string{"type": "text", "text": string(msg)}}, "isError": true}}
+		b, e = json.Marshal(response)
+		if e != nil {
+			return nil, e
+		}
+		if len(b)+1 > policy.MaxRequest {
+			return nil, fmt.Errorf("response_budget: MCP identifiers")
+		}
+	}
+	return append(b, '\n'), nil
 }

@@ -1,6 +1,7 @@
 package harnessprobe
 
 import (
+	"github.com/bojieli/agentreach/internal/service"
 	"github.com/bojieli/agentreach/internal/terminal"
 	"strings"
 )
@@ -15,7 +16,7 @@ func ManagedClaudeArgs(settings string, bridge ...string) []string {
 	args := []string{"--setting-sources", "", "--settings", settings, "--tools", "Bash", "--strict-mcp-config", "--mcp-config", config}
 	if len(bridge) > 0 {
 		args = append(args, "--allowedTools", "mcp__reach_host__host_plan", "mcp__reach_host__host_execute", "mcp__reach_host__host_status")
-		for _, name := range terminal.ToolNames {
+		for _, name := range append(append([]string{}, terminal.ToolNames...), service.ToolNames...) {
 			args = append(args, "mcp__reach_host__"+name)
 		}
 	}

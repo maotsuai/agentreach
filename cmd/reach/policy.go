@@ -141,6 +141,18 @@ func cmdHost(ctx context.Context, args []string) error {
 		return e
 	}
 	x := host.Executor{Store: p}
+	if args[0] == "execute" {
+		s, e := managedTerminalSession(ctx, args[1], false)
+		if e != nil {
+			return e
+		}
+		m, e := s.Services(s.CheckManaged)
+		if e != nil {
+			return e
+		}
+		x.Services = m
+		x.Resolve = host.ServiceResolver(m)
+	}
 	b := []byte("{}")
 	if args[0] != "status" {
 		b, e = io.ReadAll(io.LimitReader(os.Stdin, policy.MaxRequest+1))
@@ -150,6 +162,9 @@ func cmdHost(ctx context.Context, args []string) error {
 	}
 	v, e := x.Call(ctx, "host_"+args[0], b)
 	if e != nil {
+		if op, ok := v.(policy.Operation); ok && op.ID != "" {
+			_ = printJSON(map[string]any{"error": e.Error(), "operation": op})
+		}
 		return e
 	}
 	return printJSON(v)
@@ -173,6 +188,6 @@ func cmdHostBridge(ctx context.Context, args []string) error {
 	if e != nil {
 		return e
 	}
-	x := host.Executor{Store: p, OpenTerminals: s.Terminals}
+	x := host.Executor{Store: p, OpenTerminals: s.Terminals, OpenServices: s.Services}
 	return x.Serve(ctx, os.Stdin, os.Stdout)
 }

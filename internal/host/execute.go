@@ -11,6 +11,8 @@ import (
 	"strconv"
 
 	"github.com/bojieli/agentreach/internal/policy"
+	"github.com/bojieli/agentreach/internal/ports"
+	"github.com/bojieli/agentreach/internal/service"
 	"github.com/bojieli/agentreach/internal/terminal"
 )
 
@@ -29,7 +31,9 @@ type Executor struct {
 	Store         *policy.Store
 	Terminal      *terminal.Manager
 	OpenTerminals func(func(context.Context) error) (*terminal.Manager, error)
-	// Only trusted P4 code may supply a registry. Production P2 leaves it nil.
+	Services      *service.Manager
+	OpenServices  func(func(context.Context) error) (*service.Manager, error)
+	// Only trusted code may supply the production service registry.
 	Resolve func(context.Context, string) (Exposure, error)
 	launch  func(context.Context, string) error
 }
@@ -48,6 +52,36 @@ func exposureURL(e Exposure, r policy.Request) (string, error) {
 
 // Execute verifies the resource before intent and again immediately before launch.
 func (e *Executor) Execute(ctx context.Context, id, approval string) (policy.Operation, error) {
+	v, err := e.Store.Inspect()
+	if err != nil {
+		return policy.Operation{}, err
+	}
+	for _, p := range v.Pending {
+		if p.ID == id && p.Request.Host.Capability == "open_url" && e.Services != nil {
+			var op policy.Operation
+			err := e.Services.WithExposure(ctx, p.Request.Host.TargetID, func(resolve func() (ports.Exposure, error)) error {
+				connection := *e
+				connection.Services = nil
+				connection.Resolve = func(_ context.Context, target string) (Exposure, error) {
+					if target != p.Request.Host.TargetID {
+						return Exposure{}, fmt.Errorf("request_mismatch: exposure scope")
+					}
+					x, err := resolve()
+					return Exposure{Binding: x.Target.Binding, ID: x.ID, Generation: x.Target.Generation, Healthy: x.State == "open", Address: x.Address, Port: x.Port}, err
+				}
+				var err error
+				op, err = connection.Execute(ctx, id, approval)
+				return err
+			})
+			return op, err
+		}
+		if p.ID == id && p.Request.Host.Capability != "open_url" {
+			if e.Services == nil {
+				return policy.Operation{}, fmt.Errorf("unsupported: capability driver unavailable")
+			}
+			return e.Services.ExecuteHost(ctx, id, approval)
+		}
+	}
 	var authorized Exposure
 	verify := func(r policy.Request) error {
 		if r.Host.Capability != "open_url" {
