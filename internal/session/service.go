@@ -27,6 +27,8 @@ func (s *Session) Services(check func(context.Context) error) (*service.Manager,
 	if e != nil {
 		return nil, e
 	}
+	home := base
+	base = project.ControlBase(base, r)
 	p, e := s.Policy(check)
 	if e != nil {
 		return nil, e
@@ -36,7 +38,7 @@ func (s *Session) Services(check func(context.Context) error) (*service.Manager,
 		return nil, e
 	}
 	b := policy.Binding{ProjectID: s.Managed.ProjectID, RecordDigest: s.Managed.RecordSHA256, Generation: r.Binding.Generation}
-	pc := &ports.Client{Config: ports.Config{Base: base, Binding: b, Check: check, Paths: s.CheckControlPaths, Policy: p}}
+	pc := &ports.Client{Config: ports.Config{Base: base, SocketBase: home, Binding: b, Check: check, Paths: s.CheckControlPaths, Policy: p}}
 	driver := &service.DockerDriver{Client: &docker.Client{Connection: r.Spec.Docker}, Project: r, Base: base, Paths: s.CheckControlPaths}
 	m := service.New(service.Config{Base: base, Binding: b, Policy: p, Check: check, Paths: s.CheckControlPaths, Docker: driver, Terminal: t, Ports: pc})
 	pc.Resolve = m.Target
@@ -67,7 +69,7 @@ func (s *Session) Services(check func(context.Context) error) (*service.Manager,
 		}
 		cmd := exec.CommandContext(context.Background(), self, "hostd", "--session", s.Name)
 		cmd.Dir = base
-		cmd.Env = []string{"PATH=/usr/bin:/bin:/usr/sbin:/sbin", "REACH_HOME=" + base, "REACH_SESSION=" + s.Name, "REACH_MANAGED=1", "REACH_MANAGED_PROJECT=" + b.ProjectID, "REACH_MANAGED_RECORD=" + b.RecordDigest}
+		cmd.Env = []string{"PATH=/usr/bin:/bin:/usr/sbin:/sbin", "REACH_HOME=" + home, "REACH_SESSION=" + s.Name, "REACH_MANAGED=1", "REACH_MANAGED_PROJECT=" + b.ProjectID, "REACH_MANAGED_RECORD=" + b.RecordDigest}
 		detachHostManager(cmd)
 		if e = cmd.Start(); e != nil {
 			return e

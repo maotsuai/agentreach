@@ -6,11 +6,11 @@
 
 基线分支：codex/orbstack-execution-plane
 
-状态：P1–P3 已实现、验证及独立审计，P3 已按后续授权推送本人 fork。P4 服务、受控编排与端口已实现，完整检查、原生/真实 harness、用户追加的本机网络验收及独立复审已完成，交付包含本人 fork 本分支推送；外部 LAN 负例和强制 VPN 路由故障明确保留为部署待验，不宣称完整 N02 通过。P5 未启动。证据见 [P4](validation/P4.md)、[P3](validation/P3.md)、[P2](validation/P2.md)、[P1](validation/P1.md) 验证记录。
+状态：P1–P3 已实现、验证及独立审计，P3 已按后续授权推送本人 fork。P4 服务、受控编排与端口已实现，完整检查、原生/真实 harness、用户追加的本机网络验收及独立复审已完成，交付包含本人 fork 本分支推送；外部 LAN 负例和强制 VPN 路由故障明确保留为部署待验，不宣称完整 N02 通过。P5 已获授权并实现，验证层级与部署缺项见 [P5 记录](validation/P5.md)。前序阶段证据见 [P4](validation/P4.md)、[P3](validation/P3.md)、[P2](validation/P2.md)、[P1](validation/P1.md) 验证记录。
 
 本文为后续 Sol 实现提供工程规格、任务拆分、验证门槛和交接格式。它不能保证实现绝不出错；它要求在不确定处停止依赖该结论的工作，通过实验和独立审计闭环，禁止用猜测、降级或改低验收标准消除错误。
 
-初版编写时仅获授权编写规划文档。P1、P2、P3 随后分别获得实施授权；P3 完成后，用户按 [P4 交接](P4-IMPLEMENTATION-HANDOFF.zh-CN.md)授权完整 P4 和本地阶段提交，随后明确要求推本人 fork 本分支，并指示由 Agent 在本机测试。P4 按该本机范围交付；网络实测覆盖与未验边界见验证记录，不自动进入 P5。后续阶段仍须提交范围、主要改动、影响、验证和回退方案，获得明确确认后实施。已确认阶段内的常规实现细节不重复请示。本文中的后续拟新增接口和示例不是现有命令，也不预先授予超出已确认阶段的资源操作权限。
+初版编写时仅获授权编写规划文档。P1、P2、P3 随后分别获得实施授权；P3 完成后，用户按 [P4 交接](P4-IMPLEMENTATION-HANDOFF.zh-CN.md)授权完整 P4 和本地阶段提交，随后明确要求推本人 fork 本分支，并指示由 Agent 在本机测试。P4 按该本机范围交付。用户随后按 [P5 交接](P5-IMPLEMENTATION-HANDOFF.zh-CN.md)授权完整 P5 与本地阶段提交。后续阶段仍须提交范围、主要改动、影响、验证和回退方案，获得明确确认后实施。已确认阶段内的常规实现细节不重复请示。本文中的后续拟新增接口和示例不是现有命令，也不预先授予超出已确认阶段的资源操作权限。
 
 ## 阅读与执行索引
 
@@ -653,7 +653,7 @@ proxy 应限制最大连接数、空闲超时、单连接缓冲和总资源；�
 
 ### 10.1 先做只读 reconciliation
 
-拟新增 runtime reconcile --plan / project rebind --plan 等命令，具体语法实现时冻结。默认只比较：
+可用入口为 `reach runtime reconcile --plan PROJECT` 和 `reach project rebind --plan PROJECT FULL_CONTAINER_ID`。完整语法见 [运行恢复](RUNTIME-RECOVERY.md)。只读比较范围包括：
 
 - Host 期望记录、project/approval revision、容器实际 ID/StartedAt/配置。
 - terminal 实例、service 容器、exposure listener/目标。
@@ -666,7 +666,7 @@ apply 必须引用刚审核的 plan digest、原状态 revision 和期限；执�
 
 ### 10.2 项目 schema 与重绑定
 
-目前 project schema=1 且 Load 只接受 revision/generation=1。支持 rebind 必须一起设计：
+P5 显式迁移到 project schema v2。v1 项目可读，迁移保留原记录和历史状态。重绑定契约包括：
 
 1. 新 project schema（建议 v2）和严格读写/显式迁移契约；旧二进制拒绝新 schema。
 2. Revision 表示授权记录修改次数；generation 表示执行实例身份变化。仅 policy revision 变化不冒充 runtime generation。
@@ -706,7 +706,7 @@ start/stop/restart/provision/rebind 的策略和能力分别建模，不挂在 h
 
 ### 10.5 备份与还原
 
-交付明确 runbook：
+执行步骤见 [备份与还原](BACKUP-RESTORE.md)。
 
 - 源码以 Git/已确认未提交内容备份；数据库使用逻辑 dump；named volume 使用一致性策略导出。
 - 数据备份与控制状态分开。控制备份不得明文带模型凭据；若必须含敏感状态，说明加密和恢复权限。
@@ -934,4 +934,4 @@ root/身份/授权/审计/失败锁存；跨进程并发与崩溃；
 6. 备份还原与故障 runbook，明确不自动做的破坏性动作。
 7. 未执行测试、未支持功能和后置任务列表。
 
-**当前停点**：P3 已按后续授权推送本人 fork。P4 已按用户追加的本机范围完成分层验收与独立复审，本次交付包含 Luna 本地阶段提交、主代理核对及指定 fork 本分支推送；外部网络待验边界见 [P4 记录](validation/P4.md)，不自动进入 P5。P3 实际接口及证据见 [TERMINALS.md](TERMINALS.md) 和 [P3 记录](validation/P3.md)，未验证项不得视作通过。
+**当前状态**　P4 已按用户授权推送本人 fork，本机验收和外部网络缺项见 [P4 记录](validation/P4.md)。P5 的实现、独立审计、分层证据和未执行项目见 [P5 记录](validation/P5.md)。P5 授权范围止于本地阶段提交。

@@ -18,6 +18,7 @@ func (s *Session) Policy(check func(context.Context) error) (*policy.Store, erro
 	if e != nil {
 		return nil, e
 	}
+	base = project.ControlBase(base, r)
 	return policy.New(base, policy.Binding{ProjectID: s.Managed.ProjectID, RecordDigest: s.Managed.RecordSHA256, Generation: r.Binding.Generation}, check, s.CheckControlPaths), nil
 }
 

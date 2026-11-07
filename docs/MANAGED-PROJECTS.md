@@ -1,9 +1,10 @@
-# Managed OrbStack projects (P0 + P1 + P2 + P3 + P4)
+# Managed OrbStack projects
 
 Managed projects add an explicit Host authorization around an **existing**
 OrbStack Docker container. Ordinary SSH, local, Docker and Podman sessions keep
-their existing behavior. P0 never pulls, builds, creates, starts, restarts or
-automatically rebinds a runtime. `runtime health` means inspect and verify.
+their existing behavior. `runtime health` means inspect and verify. P5
+[runtime recovery](RUNTIME-RECOVERY.md) provides separately approved workspace
+lifecycle actions for the Host operator.
 
 The control plane runs on macOS. Linux tests inject volume inspectors; a Linux
 binary refuses native OrbStack volume checks. Guest commands and file operations
@@ -40,8 +41,9 @@ explicit helper installation keep their existing behavior.
 Existing P0 project/session records remain readable and their immutable runtime
 bindings remain enforced. Their Guest must be prepared explicitly with the new
 helper before managed use. An existing session cannot bypass this requirement.
-If preparing a new image recreates/restarts the container, its old binding stays
-invalid; register a new project ID rather than overwriting the old record.
+If preparing a new image recreates or restarts the container, its old binding
+becomes invalid. Use an explicit rebind for an approved replacement or register
+a new project for a different specification.
 Helper self-identification and capability negotiation do not establish protection
 against a malicious Guest of the same UID replacing the helper or controlling
 its kernel.
@@ -68,8 +70,8 @@ reach --project my-project claude
 reach --project my-project codex exec --ephemeral 'Describe the project'
 ```
 
-Registration checks the current runtime before saving a new immutable binding.
-A second registration with the same ID fails; P0 has no rebind command. Names may
+Registration checks the current runtime before saving a new binding.
+A second registration with the same ID fails. Names may
 identify a container for initial registration, but all subsequent operations use
 its captured full ID. Restarting the same container changes `StartedAt` and
 invalidates that binding. Recreating a same-named container cannot resume it.
@@ -89,8 +91,9 @@ loss is not promised there. Existing dangling session links are corrupt records,
 never empty slots that may be overwritten.
 
 Project IDs contain 1–64 ASCII letters, digits, `_` or `-`, beginning with a
-letter or digit. Managed session names start with `project-`; long IDs use a
-deterministic SHA-256 suffix to stay within the 64-character session limit.
+letter or digit. Managed session names start with `project-`. Schema v1 keeps
+its original naming rules. Schema v2 derives a new name from the full record
+digest for each binding, within the 64-character limit.
 `--project` forbids reach's `--session` override. Arguments after an explicit
 `--` remain Guest arguments, including an application's own `--session` option.
 
@@ -259,8 +262,8 @@ canonical Guest URI is reused in a later request. Reach rejects the mapping
 before dispatch instead of changing its prefix priority or guessing which file
 was intended. Existing records remain readable by inspect/health and are not
 rewritten; managed dispatch refuses an ambiguous mapping. Prepare a separate
-Guest root such as `/workspace/project` and explicitly register a new project
-when its container binding changes. There is no automatic migration or rebind.
+Guest root such as `/workspace/project`. Use a new project or an explicitly
+approved rebind when the container identity changes.
 
 The trusted entrypoint fixes the namespace: raw CLI input uses `Protocol`;
 exec-server maps its URI once, then uses `Guest` for underlying FileOps, pool
@@ -319,9 +322,16 @@ P3 adds `reach --project PROJECT terminal create|write|read|resize|interrupt|ins
 ## Services and loopback ports
 
 P4 adds separate non-interactive services and controlled loopback publications;
-see [SERVICES.md](SERVICES.md) for the typed CLI/MCP and approval workflow. The
-existing project/container binding remains immutable; service creation is an
-explicit P4 action rather than a side effect of runtime health or registration.
+see [SERVICES.md](SERVICES.md) for the typed CLI/MCP and approval workflow.
+Services remain bound to the project record under which they were created.
+
+## Recovery and backup
+
+Use `reach runtime reconcile --plan PROJECT` for a read-only comparison.
+The [recovery runbook](RUNTIME-RECOVERY.md) covers exact approval, explicit
+migration, lifecycle actions and orphan cleanup. The
+[backup and restore runbook](BACKUP-RESTORE.md) covers data validation in a
+fresh project.
 
 ## Validation and limits
 
@@ -392,10 +402,10 @@ security intent/result, explicit policy initialization and typed Host planning,
 approval and revocation; see [POLICY.md](POLICY.md). P4 supplies the production
 service/exposure registry, controlled sidecar changes and dynamic loopback proxy;
 see [SERVICES.md](SERVICES.md). Missing or unhealthy exposures are refused.
-`runtime_change` and automatic reconciliation remain later work. P3 persistent
-text terminals retain their separate [TERMINALS.md](TERMINALS.md) contract.
+Persistent text terminals retain their separate
+[TERMINALS.md](TERMINALS.md) contract.
 
-To roll back code, revert the phase commit and retain records/resources. An older
-binary must refuse new session schemas; do not force it to rewrite managed state.
-Code rollback does not delete containers, volumes or project data. Keep any stale
-lock or corrupt record as evidence until the operator performs an explicit repair.
+For code rollback, retain records and resources. Use a schema-compatible binary
+for v2 projects, or restore a reviewed compatible control backup in isolation and
+recheck the runtime identity. Keep stale locks and corrupt records as evidence
+until an explicit operator repair.

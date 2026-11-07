@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -14,6 +15,8 @@ import (
 	"github.com/bojieli/agentreach/internal/hostpath"
 	"github.com/bojieli/agentreach/internal/state"
 )
+
+var errUninitialized = errors.New("policy_unavailable: operator must run policy init")
 
 // Store owns one project ledger and its bounded cross-process lock.
 type Store struct {
@@ -81,7 +84,7 @@ func (s *Store) load() (*Ledger, error) {
 	}
 	before, e := os.Lstat(s.path)
 	if os.IsNotExist(e) {
-		return nil, fail("policy_unavailable: operator must run policy init")
+		return nil, errUninitialized
 	}
 	if e != nil {
 		return nil, e
@@ -282,6 +285,15 @@ func (s *Store) sample(l *Ledger) (Stamp, error) {
 
 // Init is the explicit operator-only policy bootstrap.
 func (s *Store) Init(ctx context.Context) error {
+	return s.init(ctx, true)
+}
+
+// InitRecovery bootstraps an empty policy with Guest and Host effects denied.
+func (s *Store) InitRecovery(ctx context.Context) error {
+	return s.init(ctx, false)
+}
+
+func (s *Store) init(ctx context.Context, guestAllow bool) error {
 	if e := s.safe(); e != nil {
 		return e
 	}
@@ -305,7 +317,7 @@ func (s *Store) Init(ctx context.Context) error {
 		if _, e = rand.Read(key); e != nil {
 			return e
 		}
-		l := &Ledger{Schema: 1, Binding: s.binding, Revision: 1, GuestAllow: true, Host: map[string]string{}, Key: key, Highwater: n}
+		l := &Ledger{Schema: 1, Binding: s.binding, Revision: 1, GuestAllow: guestAllow, Host: map[string]string{}, Key: key, Highwater: n}
 		if e = event(l, n, Operation{}, "policy", "initialized"); e != nil {
 			return e
 		}
@@ -370,6 +382,16 @@ func (s *Store) Inspect() (View, error) {
 		return View{}, e
 	}
 	return view(l), nil
+}
+
+// InspectOptional distinguishes an uninitialized ledger from an invalid one.
+// Like Inspect, it never bootstraps policy or checks the running workspace.
+func (s *Store) InspectOptional() (View, error) {
+	v, err := s.Inspect()
+	if errors.Is(err, errUninitialized) {
+		return View{}, nil
+	}
+	return v, err
 }
 
 // Set advances policy revision and invalidates all earlier plans.

@@ -33,6 +33,7 @@ func (s *Session) terminals(check func(context.Context) error, storeBase string)
 	if e != nil {
 		return nil, e
 	}
+	base = project.ControlBase(base, r)
 	if storeBase != "" {
 		base = storeBase
 	}

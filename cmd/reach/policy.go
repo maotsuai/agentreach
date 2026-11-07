@@ -10,6 +10,7 @@ import (
 	"github.com/bojieli/agentreach/internal/host"
 	"github.com/bojieli/agentreach/internal/policy"
 	"github.com/bojieli/agentreach/internal/project"
+	"github.com/bojieli/agentreach/internal/recovery"
 	"github.com/bojieli/agentreach/internal/runtime/orbstack"
 	"github.com/bojieli/agentreach/internal/session"
 	"github.com/bojieli/agentreach/internal/transport"
@@ -53,13 +54,13 @@ func operatorPolicy(id string) (*policy.Store, error) {
 		return orbstack.New(r).Check(ctx)
 	}
 	paths := func() error {
-		s := &session.Session{Name: managedSessionName(id), Managed: b}
+		s := &session.Session{Name: project.SessionNameFor(r), Managed: b}
 		if e := s.CheckControlPaths(); e != nil {
 			return e
 		}
 		return outsideWritableBinds(r, base)
 	}
-	return policy.New(base, policy.Binding{ProjectID: id, RecordDigest: b.RecordSHA256, Generation: r.Binding.Generation}, check, paths), nil
+	return policy.New(project.ControlBase(base, r), policy.Binding{ProjectID: id, RecordDigest: b.RecordSHA256, Generation: r.Binding.Generation}, check, paths), nil
 }
 
 func cmdPolicy(ctx context.Context, args []string) error {
@@ -136,28 +137,50 @@ func cmdHost(ctx context.Context, args []string) error {
 	if len(args) != 2 {
 		return fmt.Errorf("usage: reach host plan|execute|status <project> (JSON on stdin)")
 	}
-	p, e := operatorPolicy(args[1])
+	id := args[1]
+	p, e := operatorPolicy(id)
 	if e != nil {
 		return e
-	}
-	x := host.Executor{Store: p}
-	if args[0] == "execute" {
-		s, e := managedTerminalSession(ctx, args[1], false)
-		if e != nil {
-			return e
-		}
-		m, e := s.Services(s.CheckManaged)
-		if e != nil {
-			return e
-		}
-		x.Services = m
-		x.Resolve = host.ServiceResolver(m)
 	}
 	b := []byte("{}")
 	if args[0] != "status" {
 		b, e = io.ReadAll(io.LimitReader(os.Stdin, policy.MaxRequest+1))
 		if e != nil {
 			return e
+		}
+	}
+	x := host.Executor{Store: p}
+	if args[0] == "execute" {
+		x.Runtime = recovery.Executor{Controller: recovery.New(), ProjectID: id}
+		v, err := p.Inspect()
+		if err != nil {
+			return err
+		}
+		var q struct {
+			RequestID  string `json:"request_id"`
+			ApprovalID string `json:"approval_id"`
+		}
+		if err := policy.VerifyEncoded(b, &q); err != nil {
+			return err
+		}
+		needServices := false
+		for _, pending := range v.Pending {
+			if pending.ID == q.RequestID {
+				needServices = pending.Request.Host.Capability != "runtime_change"
+				break
+			}
+		}
+		if needServices {
+			s, e := managedTerminalSession(ctx, id, false)
+			if e != nil {
+				return e
+			}
+			m, e := s.Services(s.CheckManaged)
+			if e != nil {
+				return e
+			}
+			x.Services = m
+			x.Resolve = host.ServiceResolver(m)
 		}
 	}
 	v, e := x.Call(ctx, "host_"+args[0], b)

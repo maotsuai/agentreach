@@ -111,6 +111,21 @@ func (m *Manager) load() (saved, error) {
 	}
 	return s, nil
 }
+
+// Recorded returns private desired state without probing or updating services.
+func (m *Manager) Recorded() ([]Record, error) {
+	s, err := m.load()
+	return s.Records, err
+}
+
+// RecordedAt validates a retained binding's private state without referring it
+// to the current project's runtime. Recovery may diagnose old namespaces; this
+// is not a service manager and cannot dispatch or grant a Guest capability.
+func RecordedAt(base string, binding policy.Binding, paths func() error) ([]Record, error) {
+	m := &Manager{cfg: Config{Base: base, Binding: binding, Paths: paths}}
+	return m.Recorded()
+}
+
 func find(s *saved, id string) *Record {
 	for i := range s.Records {
 		if s.Records[i].ID == id {
@@ -820,6 +835,9 @@ func consumedHost(op policy.Operation) (policy.Operation, error) {
 func (m *Manager) change(ctx context.Context, s *saved, r *Record, op string) error {
 	d := m.cfg.Docker
 	if r.ContainerID == "" {
+		if e := m.Ready(ctx); e != nil {
+			return e
+		}
 		if _, e := d.Client.Compose(ctx, r.Tool, "reach-"+r.ID, d.file(*r), "create"); e != nil {
 			return e
 		}
@@ -852,6 +870,9 @@ func (m *Manager) change(ctx context.Context, s *saved, r *Record, op string) er
 		return e
 	}
 	if op == "stop" || op == "restart" {
+		if e = m.Ready(ctx); e != nil {
+			return e
+		}
 		if _, e = d.Client.ChangeService(ctx, r.ContainerID, "stop"); e != nil {
 			return e
 		}
@@ -878,6 +899,9 @@ func (m *Manager) change(ctx context.Context, s *saved, r *Record, op string) er
 		if e = m.save(*s); e != nil {
 			return e
 		}
+	}
+	if e = m.Ready(ctx); e != nil {
+		return e
 	}
 	if _, e = d.Client.ChangeService(ctx, r.ContainerID, "start"); e != nil {
 		return e

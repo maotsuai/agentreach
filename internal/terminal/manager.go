@@ -53,6 +53,27 @@ type envelope struct {
 	Checksum string `json:"checksum"`
 }
 
+// RecordedTerminal is the retained identity, not a live tmux observation.
+type RecordedTerminal struct {
+	ID          string `json:"terminal_id"`
+	OperationID string `json:"operation_id"`
+	State       string `json:"state"`
+}
+
+// Recorded returns the validated retained terminals without locks, writes,
+// Guest commands or the current workspace guard.
+func (m *Manager) Recorded() ([]RecordedTerminal, error) {
+	s, err := m.load()
+	if err != nil {
+		return nil, err
+	}
+	x := make([]RecordedTerminal, 0, len(s.Records))
+	for _, r := range s.Records {
+		x = append(x, RecordedTerminal{r.Identity.ID, r.Operation, r.State})
+	}
+	return x, nil
+}
+
 // Config contains only trusted session callbacks. Callers cannot override these through a request.
 type Config struct {
 	Base     string

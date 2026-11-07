@@ -2,23 +2,27 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/bojieli/agentreach/internal/policy"
 	"github.com/bojieli/agentreach/internal/project"
 	"github.com/bojieli/agentreach/internal/reach"
+	"github.com/bojieli/agentreach/internal/recovery"
 	"github.com/bojieli/agentreach/internal/runtime/orbstack"
 	"github.com/bojieli/agentreach/internal/session"
 )
 
 func printJSON(value any) error { return json.NewEncoder(os.Stdout).Encode(value) }
 func cmdProject(ctx context.Context, args []string) error {
+	if len(args) > 0 && (args[0] == "migrate" || args[0] == "rebind") {
+		return cmdRecovery(ctx, args)
+	}
 	if len(args) != 2 {
 		return fmt.Errorf("usage: reach project register <config.json> | inspect <id>")
 	}
@@ -49,6 +53,9 @@ func cmdProject(ctx context.Context, args []string) error {
 	}
 }
 func cmdRuntime(ctx context.Context, args []string) error {
+	if len(args) > 0 && args[0] != "health" && args[0] != "inspect" {
+		return cmdRecovery(ctx, args)
+	}
 	if len(args) != 2 || (args[0] != "health" && args[0] != "inspect") {
 		return fmt.Errorf("usage: reach runtime inspect|health <id>")
 	}
@@ -70,12 +77,118 @@ func cmdRuntime(ctx context.Context, args []string) error {
 	return printJSON(map[string]any{"status": "ready", "project_id": r.Spec.ID, "binding": r.Binding})
 }
 
+func cmdRecovery(ctx context.Context, args []string) error {
+	if os.Getenv("REACH_MANAGED") == "1" {
+		return fmt.Errorf("policy_denied: recovery entry is for the Host operator")
+	}
+	c := recovery.New()
+	if len(args) >= 2 {
+		switch args[0] {
+		case "policy":
+			if len(args) != 3 {
+				break
+			}
+			if err := c.UpdatePolicy(ctx, args[1], args[2]); err != nil {
+				return err
+			}
+			if args[2] == "init" {
+				return printJSON(map[string]string{"status": "initialized", "runtime_change": "deny", "guest": "deny"})
+			}
+			return printJSON(map[string]string{"runtime_change": args[2]})
+		case "request":
+			if len(args) != 2 {
+				break
+			}
+			var p recovery.Plan
+			if err := readRecoveryJSON(&p); err != nil {
+				return err
+			}
+			pending, err := c.Request(ctx, args[1], p)
+			if err != nil {
+				return err
+			}
+			return printJSON(pending)
+		case "approve":
+			if len(args) != 4 && len(args) != 5 {
+				break
+			}
+			ttl := policy.DefaultTTL
+			if len(args) == 5 {
+				var err error
+				ttl, err = time.ParseDuration(args[4])
+				if err != nil {
+					return err
+				}
+			}
+			a, err := c.Approve(ctx, args[1], args[2], args[3], ttl)
+			if err != nil {
+				return err
+			}
+			return printJSON(a)
+		case "apply":
+			if len(args) != 2 {
+				break
+			}
+			var q struct {
+				RequestID  string `json:"request_id"`
+				ApprovalID string `json:"approval_id"`
+			}
+			if err := readRecoveryJSON(&q); err != nil {
+				return err
+			}
+			op, err := c.Apply(ctx, args[1], q.RequestID, q.ApprovalID)
+			if err != nil {
+				if op.ID != "" {
+					_ = printJSON(map[string]any{"error": err.Error(), "operation": op})
+				}
+				return err
+			}
+			result, err := c.Result(ctx, args[1], op)
+			if err != nil {
+				_ = printJSON(result)
+				return err
+			}
+			return printJSON(result)
+		}
+	}
+	if len(args) < 3 || len(args) > 4 || args[1] != "--plan" {
+		return fmt.Errorf("usage: reach runtime reconcile|start|stop|restart|provision|orphan-stop|manager-stop --plan PROJECT [EXACT_ID]; reach project migrate|rebind --plan PROJECT [EXACT_ID]; reach runtime policy PROJECT init|approval|deny")
+	}
+	q := recovery.Request{Action: args[0]}
+	if q.Action == "provision" {
+		q.Provision = &recovery.ProvisionSpec{}
+		if err := readRecoveryJSON(q.Provision); err != nil {
+			return err
+		}
+	}
+	if len(args) == 4 {
+		if q.Action == "manager-stop" {
+			q.RecordDigest = args[3]
+		} else {
+			q.ContainerID = args[3]
+		}
+	}
+	p, err := c.Plan(ctx, args[2], q)
+	if err != nil {
+		return err
+	}
+	return printJSON(p)
+}
+
+func readRecoveryJSON(out any) error {
+	b, err := io.ReadAll(io.LimitReader(os.Stdin, policy.MaxRequest+1))
+	if err != nil {
+		return err
+	}
+	return policy.VerifyEncoded(b, out)
+}
+
 func managedSession(ctx context.Context, id string) (*session.Session, error) {
 	r, err := project.Load(id)
 	if err != nil {
 		return nil, err
 	}
-	name := managedSessionName(id)
+	name := project.SessionNameFor(r)
 	if s, err := session.Load(name); err == nil {
 		if s.Managed == nil || *s.Managed != *session.Bind(r) {
 			return nil, fmt.Errorf("identity_changed: existing session is not this registered project")
@@ -147,12 +260,7 @@ func checkProjectSessionOverride(args []string) error {
 }
 
 func managedSessionName(id string) string {
-	name := "project-" + id
-	if len(name) <= 64 {
-		return name
-	}
-	h := sha256.Sum256([]byte(id))
-	return name[:47] + "-" + hex.EncodeToString(h[:8])
+	return project.SessionName(id)
 }
 
 // Terminal observations must reach their manager even when a saved runtime generation is lost.
@@ -162,7 +270,7 @@ func managedTerminalSession(ctx context.Context, id string, bootstrap bool) (*se
 	if e != nil {
 		return nil, e
 	}
-	s, e := session.Load(managedSessionName(id))
+	s, e := session.Load(project.SessionNameFor(r))
 	if errors.Is(e, os.ErrNotExist) {
 		if !bootstrap {
 			return nil, fmt.Errorf("resource_lost: no managed session; create a terminal first")

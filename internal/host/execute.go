@@ -33,6 +33,9 @@ type Executor struct {
 	OpenTerminals func(func(context.Context) error) (*terminal.Manager, error)
 	Services      *service.Manager
 	OpenServices  func(func(context.Context) error) (*service.Manager, error)
+	Runtime       interface {
+		ExecuteHost(context.Context, string, string) (policy.Operation, error)
+	}
 	// Only trusted code may supply the production service registry.
 	Resolve func(context.Context, string) (Exposure, error)
 	launch  func(context.Context, string) error
@@ -76,6 +79,12 @@ func (e *Executor) Execute(ctx context.Context, id, approval string) (policy.Ope
 			return op, err
 		}
 		if p.ID == id && p.Request.Host.Capability != "open_url" {
+			if p.Request.Host.Capability == "runtime_change" {
+				if e.Runtime == nil {
+					return policy.Operation{}, fmt.Errorf("unsupported: use the explicit operator runtime apply entry")
+				}
+				return e.Runtime.ExecuteHost(ctx, id, approval)
+			}
 			if e.Services == nil {
 				return policy.Operation{}, fmt.Errorf("unsupported: capability driver unavailable")
 			}

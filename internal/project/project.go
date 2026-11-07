@@ -3,6 +3,9 @@ package project
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path"
@@ -17,6 +20,9 @@ import (
 
 // Schema identifies immutable project specs and bindings.
 const Schema = 1
+
+// SchemaV2 supports explicit revisioned authorization and execution rebinding.
+const SchemaV2 = 2
 
 var idRE = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$`)
 
@@ -88,6 +94,40 @@ type Record struct {
 	Binding Binding `json:"binding"`
 }
 
+// Digest is the complete persisted authorization pinned by managed objects.
+func Digest(r Record) string {
+	b, _ := json.Marshal(r)
+	h := sha256.Sum256(b)
+	return hex.EncodeToString(h[:])
+}
+
+// SessionName derives the conventional legacy managed session name.
+func SessionName(id string) string {
+	name := "project-" + id
+	if len(name) <= 64 {
+		return name
+	}
+	h := sha256.Sum256([]byte(id))
+	return name[:47] + "-" + hex.EncodeToString(h[:8])
+}
+
+// SessionNameFor prevents a new binding from overwriting an old saved session.
+func SessionNameFor(r Record) string {
+	if r.Spec.Schema == SchemaV2 {
+		return "project-v2-" + Digest(r)[:48]
+	}
+	return SessionName(r.Spec.ID)
+}
+
+// ControlBase gives each v2 authorization its own private resource namespace.
+// The canonical projects record remains in Home and is the only binding authority.
+func ControlBase(base string, r Record) string {
+	if r.Spec.Schema == SchemaV2 {
+		return filepath.Join(base, "epochs", Digest(r))
+	}
+	return base
+}
+
 // ReadSpec rejects ambiguous JSON, unknown fields and unsupported schemas.
 func ReadSpec(path string) (Spec, error) {
 	var s Spec
@@ -99,7 +139,7 @@ func ReadSpec(path string) (Spec, error) {
 
 // Validate checks the registration's supported shape before runtime inspection.
 func (s Spec) Validate() error {
-	if s.Schema != Schema || !ValidID(s.ID) || s.Provider != "orbstack-docker" || s.Container == "" {
+	if s.Schema != Schema && s.Schema != SchemaV2 || !ValidID(s.ID) || s.Provider != "orbstack-docker" || s.Container == "" {
 		return docker.Fail("policy_denied", "unsupported project schema/provider, invalid id or missing container")
 	}
 	if s.Workspace.Mode != "shared-project" && s.Workspace.Mode != "guest-owned" {
@@ -164,14 +204,37 @@ func Load(id string) (Record, error) {
 	if err := r.Spec.Validate(); err != nil {
 		return r, err
 	}
-	if r.Spec.ID != id || r.Binding.Schema != Schema || r.Binding.Revision != 1 || r.Binding.Generation != 1 || len(r.Binding.ContainerID) != 64 || r.Binding.ImageID == "" || r.Binding.DaemonID == "" || r.Binding.StartedAt == "" || len(r.Binding.SnapshotSHA256) != 64 {
+	if err := r.Validate(); err != nil {
+		return r, err
+	}
+	if r.Spec.ID != id {
 		return r, docker.Fail("state_corrupt", "invalid project binding; explicit repair is required")
 	}
 	return r, nil
 }
 
+// Validate is shared by strict reads and explicit CAS publication.
+func (r Record) Validate() error {
+	b := r.Binding
+	if err := r.Spec.Validate(); err != nil {
+		return err
+	}
+	if b.Schema != r.Spec.Schema || b.Revision == 0 || b.Generation == 0 || b.Generation > b.Revision ||
+		b.Schema == Schema && (b.Revision != 1 || b.Generation != 1) ||
+		!docker.FullID(b.ContainerID) || b.ImageID == "" || b.DaemonID == "" || b.StartedAt == "" || len(b.SnapshotSHA256) != 64 {
+		return docker.Fail("state_corrupt", "invalid project binding; explicit repair is required")
+	}
+	if _, err := hex.DecodeString(b.SnapshotSHA256); err != nil {
+		return docker.Fail("state_corrupt", "invalid binding snapshot digest")
+	}
+	return nil
+}
+
 // Register writes a newly captured binding exactly once. P0 has no rebind API.
 func Register(ctx context.Context, r Record) error {
+	if err := r.Validate(); err != nil {
+		return err
+	}
 	p, err := recordPath(r.Spec.ID)
 	if err != nil {
 		return err

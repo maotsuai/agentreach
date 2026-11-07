@@ -31,6 +31,26 @@ type DockerDriver struct {
 	Paths   func() error
 }
 
+// RecoveryIdentity checks a retained sidecar's complete configuration and
+// execution identity without depending on the old workspace being alive.
+// The caller must separately prove ownership from the original durable intent.
+func (d *DockerDriver) RecoveryIdentity(ctx context.Context, r Record) error {
+	if r.Spec.Driver != "sidecar" || r.Snapshot == "" || r.StartedAt == "" {
+		return fmt.Errorf("identity_changed: incomplete retained sidecar identity")
+	}
+	if err := d.Paths(); err != nil {
+		return err
+	}
+	c, err := d.Client.InspectService(ctx, r.ContainerID)
+	if err != nil {
+		return err
+	}
+	if c.State.StartedAt != r.StartedAt {
+		return docker.Fail("generation_mismatch", "orphan sidecar restarted")
+	}
+	return d.verify(ctx, r, c)
+}
+
 func (d *DockerDriver) prepare(ctx context.Context, s Spec) (Spec, docker.ComposeTool, error) {
 	s.Mounts = slices.Clone(s.Mounts)
 	c, e := d.Client.InspectService(ctx, d.Project.Binding.ContainerID)

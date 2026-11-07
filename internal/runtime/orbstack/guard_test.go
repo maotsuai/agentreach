@@ -93,6 +93,9 @@ func setup(t *testing.T) *fixture {
 		if slices.Contains(args, "info") {
 			return json.Marshal(map[string]string{"ID": f.daemon, "OperatingSystem": "OrbStack"})
 		}
+		if slices.Contains(args, "ls") && slices.Contains(args, "container") {
+			return []byte(f.c.ID + "\n"), nil
+		}
 		if slices.Contains(args, "volume") {
 			return json.Marshal([]docker.Volume{f.volume})
 		}

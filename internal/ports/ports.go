@@ -91,12 +91,15 @@ type response struct {
 
 // Config supplies only trusted binding, authorization and identity callbacks.
 type Config struct {
-	Base    string
-	Binding policy.Binding
-	Check   func(context.Context) error
-	Paths   func() error
-	Policy  *policy.Store
-	Resolve func(context.Context, string, uint16) (Target, error)
+	Base string
+	// SocketBase keeps Unix addresses short while v2 disk state is namespaced.
+	// Only trusted session construction supplies this canonical Host directory.
+	SocketBase string
+	Binding    policy.Binding
+	Check      func(context.Context) error
+	Paths      func() error
+	Policy     *policy.Store
+	Resolve    func(context.Context, string, uint16) (Target, error)
 	// ResolveIdentity verifies the same complete identity without application
 	// readiness. Drivers providing only Resolve retain their stronger callback.
 	ResolveIdentity func(context.Context, string, uint16) (Target, error)
@@ -104,21 +107,43 @@ type Config struct {
 
 func (cfg Config) file() privatecontrol.File {
 	return privatecontrol.File{Root: cfg.Base, Path: filepath.Join(cfg.Base, "ports", cfg.Binding.ProjectID+".json"), Max: 1 << 20, Check: func() error {
-		if e := cfg.validate(); e != nil {
+		if e := cfg.validateStorage(); e != nil {
 			return e
 		}
 		return cfg.Paths()
 	}}
 }
 func (cfg Config) validate() error {
+	if e := cfg.validateStorage(); e != nil {
+		return e
+	}
+	if cfg.Check == nil || cfg.Policy == nil || cfg.Resolve == nil {
+		return fmt.Errorf("policy_denied: missing manager authority callbacks")
+	}
+	return nil
+}
+
+func (cfg Config) validateStorage() error {
 	_, e := hex.DecodeString(cfg.Binding.RecordDigest)
-	if !project.ValidID(cfg.Binding.ProjectID) || len(cfg.Binding.RecordDigest) != 64 || e != nil || cfg.Binding.Generation != 1 || cfg.Check == nil || cfg.Paths == nil || cfg.Policy == nil || cfg.Resolve == nil {
+	if !project.ValidID(cfg.Binding.ProjectID) || len(cfg.Binding.RecordDigest) != 64 || e != nil || cfg.Binding.Generation == 0 || cfg.Paths == nil {
 		return fmt.Errorf("policy_denied: invalid private manager configuration")
+	}
+	if cfg.SocketBase != "" {
+		if e := privatecontrol.Dir(cfg.SocketBase); e != nil {
+			return e
+		}
+		if e := privatecontrol.Dir(filepath.Dir(cfg.socket())); e != nil {
+			return e
+		}
 	}
 	return nil
 }
 func (cfg Config) socket() string {
-	return filepath.Join(cfg.Base, "ports", cfg.Binding.RecordDigest[:16]+".sock")
+	base := cfg.SocketBase
+	if base == "" {
+		base = cfg.Base
+	}
+	return filepath.Join(base, "ports", cfg.Binding.RecordDigest[:16]+".sock")
 }
 func (cfg Config) load() (disk, error) {
 	var d disk
@@ -166,6 +191,9 @@ func (c *Client) call(ctx context.Context, q request) (response, error) {
 	}
 	if d.Instance == "" {
 		return out, fmt.Errorf("exposure_unavailable: Host manager absent")
+	}
+	if q.Instance != "" && q.Instance != d.Instance {
+		return out, &IdentityError{fmt.Errorf("recorded manager instance changed")}
 	}
 	q.Instance = d.Instance
 	q.Binding = c.Binding
@@ -516,7 +544,7 @@ func (s *Server) handle(ctx context.Context, q request) response {
 	}
 	// Never hold the listener mutex while invoking a service resolver. A
 	// browser/close operation may hold the service lock while querying us.
-	if q.Op != "shutdown" {
+	if q.Op != "shutdown" && q.Op != "recovery_status" {
 		if e := s.cfg.Check(ctx); e != nil {
 			return fail(e)
 		}
@@ -543,7 +571,7 @@ func (s *Server) handle(ctx context.Context, q request) response {
 		return out
 	}
 	switch q.Op {
-	case "list":
+	case "list", "recovery_status":
 		out.Exposures = append([]Exposure{}, s.d.Exposures...)
 	case "expose":
 		for _, x := range s.d.Exposures {
@@ -653,6 +681,12 @@ func (s *Server) Serve(ctx context.Context) error {
 	}()
 	d, e := s.cfg.load()
 	if e != nil {
+		return e
+	}
+	if e = privatecontrol.Dir(filepath.Dir(s.cfg.socket())); e != nil {
+		return e
+	}
+	if e = os.MkdirAll(filepath.Dir(s.cfg.socket()), 0700); e != nil {
 		return e
 	}
 	s.mu.Lock()
@@ -988,7 +1022,7 @@ func (s *Server) forward(l *live, client net.Conn) {
 
 func validateRequest(q request) error {
 	switch q.Op {
-	case "list", "shutdown":
+	case "list", "shutdown", "recovery_status":
 		if q.Target != (Target{}) || q.OperationID != "" || q.ExposureID != "" || q.Port != 0 {
 			return fmt.Errorf("policy_denied: unexpected manager parameters")
 		}

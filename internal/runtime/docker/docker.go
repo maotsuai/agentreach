@@ -215,8 +215,10 @@ type HostConfig struct {
 // Container is the subset needed for runtime identity and isolation checks.
 type Container struct {
 	ID    string `json:"Id"`
+	Name  string
 	Image string
 	State struct {
+		Status     string
 		Running    bool
 		Paused     bool
 		Restarting bool
@@ -230,6 +232,9 @@ type Container struct {
 	Mounts     []Mount
 	HostConfig json.RawMessage
 }
+
+// FullID reports whether a Docker object ID is exact, not a name or prefix.
+func FullID(id string) bool { return fullID(id) }
 
 // Inspect queries the pinned endpoint, using a name only during registration.
 func (c *Client) Inspect(ctx context.Context, id string) (Container, error) {

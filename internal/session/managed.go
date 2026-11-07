@@ -2,9 +2,6 @@ package session
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -12,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/bojieli/agentreach/internal/hostpath"
+	"github.com/bojieli/agentreach/internal/privatecontrol"
 	"github.com/bojieli/agentreach/internal/project"
 	"github.com/bojieli/agentreach/internal/reach"
 	"github.com/bojieli/agentreach/internal/rooted"
@@ -28,9 +26,7 @@ type Managed struct {
 }
 
 func recordDigest(r project.Record) string {
-	b, _ := json.Marshal(r)
-	h := sha256.Sum256(b)
-	return hex.EncodeToString(h[:])
+	return project.Digest(r)
 }
 
 // Bind creates the persisted reference without changing the project record.
@@ -112,14 +108,30 @@ func (s *Session) CheckControlPaths() error {
 	if err != nil {
 		return err
 	}
-	for _, rel := range []string{"", "sessions", "projects", "conf", "bin", "codex-home", "security", "terminals", "services", "ports", "service-backends", filepath.Join("terminals", s.Managed.ProjectID+".json"), filepath.Join("terminals", s.Managed.ProjectID+".json.lock"), filepath.Join("security", s.Managed.ProjectID+".json"), filepath.Join("security", s.Managed.ProjectID+".json.lock"), filepath.Join("sessions", s.Name+".json"), filepath.Join("sessions", s.Name+".cwd"), filepath.Join("projects", s.Managed.ProjectID+".json"), filepath.Join("conf", s.Name+".claude-settings.json"), filepath.Join("codex-home", s.Name), filepath.Join("codex-home", s.Name, "auth.json"), filepath.Join("codex-home", s.Name, "config.toml"), filepath.Join("codex-home", s.Name, "environments.toml")} {
+	for _, rel := range []string{"epochs", "runtime", filepath.Join("runtime", s.Managed.ProjectID+".json"), filepath.Join("runtime", s.Managed.ProjectID+".json.lock")} {
 		if err := hostpath.Canonical(filepath.Join(base, rel), true); err != nil {
-			return fmt.Errorf("policy_denied: unsafe managed control path: %w", err)
+			return fmt.Errorf("policy_denied: unsafe recovery control path: %w", err)
 		}
 	}
-	for _, rel := range []string{filepath.Join("terminals", s.Managed.ProjectID+".json"), filepath.Join("security", s.Managed.ProjectID+".json"), filepath.Join("sessions", s.Name+".json"), filepath.Join("sessions", s.Name+".cwd"), filepath.Join("projects", s.Managed.ProjectID+".json"), filepath.Join("conf", s.Name+".claude-settings.json"), filepath.Join("codex-home", s.Name, "auth.json"), filepath.Join("codex-home", s.Name, "config.toml"), filepath.Join("codex-home", s.Name, "environments.toml")} {
-		if err := hostpath.PrivateFile(filepath.Join(base, rel)); err != nil {
-			return fmt.Errorf("policy_denied: unsafe managed control file: %w", err)
+	bases := []string{base}
+	if len(s.Managed.RecordSHA256) == 64 {
+		for _, p := range []string{filepath.Join(base, "epochs"), filepath.Join(base, "epochs", s.Managed.RecordSHA256)} {
+			if err := privatecontrol.Dir(p); err != nil {
+				return err
+			}
+		}
+		bases = append(bases, filepath.Join(base, "epochs", s.Managed.RecordSHA256))
+	}
+	for _, base := range bases {
+		for _, rel := range []string{"", "sessions", "projects", "conf", "bin", "codex-home", "security", "terminals", "services", "ports", "service-backends", filepath.Join("terminals", s.Managed.ProjectID+".json"), filepath.Join("terminals", s.Managed.ProjectID+".json.lock"), filepath.Join("security", s.Managed.ProjectID+".json"), filepath.Join("security", s.Managed.ProjectID+".json.lock"), filepath.Join("sessions", s.Name+".json"), filepath.Join("sessions", s.Name+".cwd"), filepath.Join("projects", s.Managed.ProjectID+".json"), filepath.Join("conf", s.Name+".claude-settings.json"), filepath.Join("codex-home", s.Name), filepath.Join("codex-home", s.Name, "auth.json"), filepath.Join("codex-home", s.Name, "config.toml"), filepath.Join("codex-home", s.Name, "environments.toml")} {
+			if err := hostpath.Canonical(filepath.Join(base, rel), true); err != nil {
+				return fmt.Errorf("policy_denied: unsafe managed control path: %w", err)
+			}
+		}
+		for _, rel := range []string{filepath.Join("runtime", s.Managed.ProjectID+".json"), filepath.Join("terminals", s.Managed.ProjectID+".json"), filepath.Join("security", s.Managed.ProjectID+".json"), filepath.Join("sessions", s.Name+".json"), filepath.Join("sessions", s.Name+".cwd"), filepath.Join("projects", s.Managed.ProjectID+".json"), filepath.Join("conf", s.Name+".claude-settings.json"), filepath.Join("codex-home", s.Name, "auth.json"), filepath.Join("codex-home", s.Name, "config.toml"), filepath.Join("codex-home", s.Name, "environments.toml")} {
+			if err := hostpath.PrivateFile(filepath.Join(base, rel)); err != nil {
+				return fmt.Errorf("policy_denied: unsafe managed control file: %w", err)
+			}
 		}
 	}
 	return nil

@@ -107,7 +107,7 @@ func (g *Guard) storage(ctx context.Context) error {
 	protected := []string{s.EngineDataPath, control, s.Docker.CLI, s.Docker.ConfigDir, s.OrbStackConfig}
 	// Existing control subdirectories and files must not redirect later state,
 	// auth or settings writes through a symlink into a Guest-writable bind.
-	for _, part := range []string{"sessions", "projects", "conf", "bin", "codex-home", "security", "terminals", "services", "ports", "service-backends"} {
+	for _, part := range []string{"sessions", "projects", "conf", "bin", "codex-home", "security", "terminals", "services", "ports", "service-backends", "epochs", "runtime"} {
 		protected = append(protected, filepath.Join(control, part))
 	}
 	for _, p := range protected {
@@ -200,10 +200,14 @@ func safeSource(p, home string) bool {
 }
 
 func (g *Guard) safe(ctx context.Context, c docker.Container) (map[string]docker.Volume, error) {
-	s := g.Record.Spec
 	if !c.State.Running || c.State.Paused || c.State.Restarting {
 		return nil, docker.Fail("runtime_unavailable", "container is not running normally")
 	}
+	return g.safeConfig(ctx, c)
+}
+
+func (g *Guard) safeConfig(ctx context.Context, c docker.Container) (map[string]docker.Volume, error) {
+	s := g.Record.Spec
 	if !numericUser.MatchString(c.Config.User) || c.Config.WorkingDir != s.Workspace.GuestPath {
 		return nil, docker.Fail("policy_denied", "require explicit nonzero numeric UID and approved working directory")
 	}
@@ -283,20 +287,7 @@ func (g *Guard) safe(ctx context.Context, c docker.Container) (map[string]docker
 	return volumes, nil
 }
 
-func snapshot(c docker.Container) string {
-	var host any
-	_ = json.Unmarshal(c.HostConfig, &host)
-	mounts := slices.Clone(c.Mounts)
-	slices.SortFunc(mounts, func(a, b docker.Mount) int { return strings.Compare(a.Destination, b.Destination) })
-	b, _ := json.Marshal(struct {
-		User, Dir string
-		Labels    map[string]string
-		Mounts    []docker.Mount
-		Host      any
-	}{c.Config.User, c.Config.WorkingDir, c.Config.Labels, mounts, host})
-	h := sha256.Sum256(b)
-	return hex.EncodeToString(h[:])
-}
+func snapshot(c docker.Container) string { return template(c).Digest() }
 
 // Capture validates an existing container before the explicit registration.
 func (g *Guard) Capture(ctx context.Context) (project.Binding, error) {
@@ -321,7 +312,7 @@ func (g *Guard) Capture(ctx context.Context) (project.Binding, error) {
 	if len(c.ID) != 64 || c.Image == "" || c.State.StartedAt == "" {
 		return project.Binding{}, docker.Fail("identity_changed", "incomplete container identity")
 	}
-	return project.Binding{Schema: project.Schema, Revision: 1, Generation: 1, ContainerID: c.ID, ImageID: c.Image, StartedAt: c.State.StartedAt, DaemonID: daemonID, SnapshotSHA256: snapshot(c), NamedVolumes: vs, RegisteredAt: time.Now()}, nil
+	return project.Binding{Schema: g.Record.Spec.Schema, Revision: 1, Generation: 1, ContainerID: c.ID, ImageID: c.Image, StartedAt: c.State.StartedAt, DaemonID: daemonID, SnapshotSHA256: snapshot(c), NamedVolumes: vs, RegisteredAt: time.Now()}, nil
 }
 
 // Check is ensure_ready: it performs inspections only and never repairs state.

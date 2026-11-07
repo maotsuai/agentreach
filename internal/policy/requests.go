@@ -73,6 +73,16 @@ func normalise(h HostRequest) (HostRequest, string, error) {
 			return h, "", fail("policy_denied: invalid port exposure parameters")
 		}
 		return h, "create_loopback_exposure", nil
+	case "runtime_change":
+		if p.Path != "" || p.ServiceID != "" || p.GuestPort != 0 || p.HostPort != 0 || p.Listen != "" || !digestPattern.MatchString(p.SpecDigest) {
+			return h, "", fail("policy_denied: invalid runtime plan parameters")
+		}
+		switch p.Operation {
+		case "start", "stop", "restart", "migrate", "rebind", "provision", "orphan-stop", "manager-stop":
+			return h, "explicit_runtime_recovery", nil
+		default:
+			return h, "", fail("policy_denied: unknown runtime operation")
+		}
 	default:
 		if p.Path != "" || p.ServiceID != "" || p.GuestPort != 0 || p.HostPort != 0 || p.Listen != "" || !digestPattern.MatchString(p.SpecDigest) || p.Operation != "start" && p.Operation != "stop" && p.Operation != "restart" {
 			return h, "", fail("policy_denied: invalid change parameters")
@@ -83,12 +93,41 @@ func normalise(h HostRequest) (HostRequest, string, error) {
 
 // Plan persists an exact request without granting or executing it.
 func (s *Store) Plan(ctx context.Context, h HostRequest) (Pending, error) {
+	if h.Capability == "runtime_change" {
+		return Pending{}, fail("policy_denied: use the operator runtime request entry")
+	}
+	return s.plan(ctx, h, 0)
+}
+
+// PlanRuntime records an operator's retained recovery request for one policy revision.
+func (s *Store) PlanRuntime(ctx context.Context, h HostRequest, revision uint64) (Pending, error) {
+	if h.Capability != "runtime_change" || h.TargetID != s.binding.ProjectID || h.Generation != s.binding.Generation || revision == 0 {
+		return Pending{}, fail("policy_denied: invalid runtime request scope")
+	}
+	return s.plan(ctx, h, revision)
+}
+
+func (s *Store) plan(ctx context.Context, h HostRequest, revision uint64) (Pending, error) {
 	var out Pending
 	h, effect, e := normalise(h)
 	if e != nil {
 		return out, e
 	}
+	if revision != 0 && h.Params.Operation == "migrate" {
+		// Schema 1 is still authoritative until publication. P4 decodes
+		// only start/stop/restart in this slot. The explicit effect and
+		// digest bind migration, and P4 cannot execute runtime_change.
+		h.Params.Operation = "restart"
+		effect = "publish_project_schema_v2"
+	}
 	e = s.transaction(ctx, func(l *Ledger, n Stamp) error {
+		actor := "model"
+		if revision != 0 {
+			if l.Revision != revision || l.Host[h.Capability] != "approval" {
+				return fail("plan_stale: runtime policy changed")
+			}
+			actor = "operator"
+		}
 		if l.Host[h.Capability] != "allow" && l.Host[h.Capability] != "approval" {
 			return fail("policy_denied: Host capability defaults to deny")
 		}
@@ -101,7 +140,7 @@ func (s *Store) Plan(ctx context.Context, h HostRequest) (Pending, error) {
 		r := Request{l.Binding, l.Revision, h, h.TargetID, effect}
 		out = Pending{newID(), r, digest(r)}
 		l.Pending = append(l.Pending, out)
-		return event(l, n, Operation{RequestID: out.ID, Digest: out.Digest, Capability: h.Capability, Actor: "model", Revision: l.Revision, TargetID: h.TargetID, Generation: h.Generation}, "plan", "planned")
+		return event(l, n, Operation{RequestID: out.ID, Digest: out.Digest, Capability: h.Capability, Actor: actor, Revision: l.Revision, TargetID: h.TargetID, Generation: h.Generation}, "plan", "planned")
 	})
 	return out, e
 }
@@ -176,6 +215,11 @@ func (s *Store) BeginHost(ctx context.Context, id, approvalID string, verify ...
 			}
 		}
 		decision := l.Host[req.Host.Capability]
+		if req.Host.Capability == "runtime_change" {
+			if decision != "approval" {
+				return fail("policy_denied: runtime change requires approval")
+			}
+		}
 		if decision != "allow" && decision != "approval" {
 			return fail("policy_denied")
 		}

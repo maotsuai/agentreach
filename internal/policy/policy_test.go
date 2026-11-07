@@ -137,6 +137,28 @@ func TestClockRevocationAndPolicyRevision(t *testing.T) {
 	}
 }
 
+func TestRuntimeGrantExpiresDuringFinalReadiness(t *testing.T) {
+	s, n := fixture(t)
+	ctx := context.Background()
+	must(t, s.Set(ctx, "runtime_change", "approval"))
+	h := HostRequest{Capability: "runtime_change", TargetID: "test", Generation: 1, Params: HostParams{Operation: "restart", SpecDigest: strings.Repeat("b", 64)}}
+	_, err := s.Plan(ctx, h)
+	want(t, err, "policy_denied")
+	_, err = s.PlanRuntime(ctx, h, 1)
+	want(t, err, "plan_stale")
+	p, err := s.PlanRuntime(ctx, h, 2)
+	must(t, err)
+	a, err := s.Approve(ctx, p.ID, p.Digest, time.Minute)
+	must(t, err)
+	op, _, err := s.BeginHost(ctx, p.ID, a.ID)
+	must(t, err)
+	s.check = func(context.Context) error {
+		n.Tick = a.Deadline
+		return nil
+	}
+	want(t, s.CheckRuntimeIntent(ctx, op.ID), "approval_expired_or_revoked")
+}
+
 func TestConcurrentSingleUse(t *testing.T) {
 	s, _ := fixture(t)
 	p, a := planned(t, s)

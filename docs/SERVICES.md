@@ -1,10 +1,15 @@
 # Managed services and loopback ports (P4)
 
 P4 adds typed sidecar and non-interactive workspace services to an existing
-managed project. It preserves the project's P0 binding and the P2 security
-ledger. It does not provision images, rebind a workspace, or run repository
-Compose files. Current validation and environment gaps are recorded in
-[validation/P4.md](validation/P4.md).
+managed project. Each service retains its original binding and P2 operation
+identity. Sidecars use a generated Compose file. See the
+[P4 validation and environment limits](validation/P4.md).
+
+After [P5 migration or rebind](RUNTIME-RECOVERY.md), create new services and
+exposures in the new binding. Dynamic listeners and streams are retired by
+their binding checks. A fixed Docker publication stays with its sidecar until
+an explicit lifecycle action stops that exact resource. P5 can plan and stop
+a proven retired sidecar or exit its original drained manager.
 
 ## Service specifications and authority
 

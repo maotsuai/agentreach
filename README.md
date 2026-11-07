@@ -433,6 +433,8 @@ model is in [docs/SECURITY.md](docs/SECURITY.md).
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | how the pieces fit, and which alternatives got thrown out |
 | [TRANSPORTS.md](docs/TRANSPORTS.md) | the three file-operation tiers, benchmarked on real links |
 | [MANAGED-PROJECTS.md](docs/MANAGED-PROJECTS.md) | managed helper preparation, registration, path mapping and OrbStack checks |
+| [Runtime recovery](docs/RUNTIME-RECOVERY.md) | reconciliation, migration, lifecycle approvals and orphan cleanup |
+| [Backup and restore](docs/BACKUP-RESTORE.md) | independent data archives and isolated restore verification |
 | [RESEARCH.md](docs/RESEARCH.md) | what each agent does internally, with transcripts |
 | [SECURITY.md](docs/SECURITY.md) | threat model, and what reach won't save you from |
 | [WINDOWS.md](docs/WINDOWS.md) | running reach from Windows |

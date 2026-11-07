@@ -57,8 +57,9 @@ Actual request and approval IDs are random 32-character hex values, not the
 placeholders above. A grant is single-use, defaults to five minutes and has a
 maximum TTL of fifteen minutes. Revocation prevents future consumption; it
 cannot undo an action already dispatched. Every policy change advances its own
-revision and invalidates earlier plans and approvals. Project schema 1,
-revision/generation 1 and session schema v2 remain unchanged.
+revision and invalidates earlier plans and approvals. Schema v2 places policy
+under `REACH_HOME/epochs/FULL_RECORD_DIGEST/security/PROJECT.json`. Migration
+and rebind require fresh policy and keep the original key and history private.
 
 Rules are `allow`, `approval` or `deny` for `open_url`, `port_expose`,
 `service_change`, `runtime_change`. Guest has only `allow`/`deny`. Host defaults
@@ -73,10 +74,10 @@ uses fixed `/usr/bin/open` argv on macOS. Browser navigation after opening is
 outside this guarantee. P4 supplies the production registry from exact service
 and listener identities. Missing, unhealthy, retired or foreign exposures return
 `exposure_unavailable`. `service_change` and `port_expose` execute only their
-retained typed specifications; `runtime_change` remains `unsupported` pending
-later reconciliation work. There is no model-accessible bypass or test-mode
-environment variable. Real fixed-harness/browser acceptance and separate LAN
-limitations are recorded in [validation/P4.md](validation/P4.md).
+retained typed specifications. `runtime_change` requires the separate Host
+operator workflow and an exact approval. The fixed MCP bridge refuses runtime
+requests. See [runtime recovery](RUNTIME-RECOVERY.md) and the
+[P4 browser and LAN validation](validation/P4.md).
 
 Dynamic exposure creation and pre-dial checks require application readiness.
 The post-dial check withholds payload until the complete target identity is
@@ -91,7 +92,8 @@ private HMAC key or raw Guest commands, stdin, environment or file contents.
 
 ## Durability, privacy and failure semantics
 
-Each project uses `REACH_HOME/security/PROJECT.json`: one strict schema-1
+Schema v1 uses `REACH_HOME/security/PROJECT.json`. Each schema v2 binding uses
+its epoch path. The ledger is one strict schema-1
 envelope containing policy, private HMAC key, pending plans, approvals,
 operations, ordered events and a checksum. A bounded directory lock serializes
 writers across processes. Approval consumption and intent are a single atomic

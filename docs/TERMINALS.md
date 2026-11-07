@@ -12,8 +12,9 @@ Prepare the current Linux `reach-helper` at `/usr/local/bin/reach-helper` as
 specified in [MANAGED-PROJECTS.md](MANAGED-PROJECTS.md). The terminal helper
 currently requires the experimentally tested `/usr/bin/tmux` **3.3a**. It neither
 installs nor upgrades tmux/helper during reads, health checks or dispatch. Prepare
-and register a new isolated project when an image/container binding changes.
-Initialize its policy explicitly with `reach policy init PROJECT`.
+the approved helper on a replacement, then use an explicit
+[rebind or new registration](RUNTIME-RECOVERY.md). Initialize policy with
+`reach policy init PROJECT`. Create a new terminal for the new binding.
 
 The backend uses a per-terminal private socket, `/dev/null` configuration,
 controlled Guest environment and random names. It never connects to the default
@@ -81,8 +82,10 @@ pane, PID or replacement container cannot inherit it. Closed/lost IDs are never
 reused. A connection permanently latches its first runtime/identity failure, including backend nonce/instance mismatches and helper identity rejections;
 recovery requires a new connection and an unchanged real backend. The MCP latch also covers the existing Host status tools.
 
-A private per-project Host schema-1 terminal envelope lives at
-`REACH_HOME/terminals/PROJECT.json`. It stores object identity, keyed parameter
+A private Host schema-1 terminal envelope lives at
+`REACH_HOME/terminals/PROJECT.json` for project schema v1. Project schema v2
+uses the equivalent path under `REACH_HOME/epochs/FULL_RECORD_DIGEST`. It stores
+object identity, keyed parameter
 digests, input IDs, operation IDs and necessary state; raw argv/input are not
 persisted there. The P2 ledger remains authoritative for policy, durable intent
 and result. Lock order is terminal-project lock → policy ledger lock, never the
@@ -180,8 +183,8 @@ successful transport response: callers must inspect it. Missing/truncated or cha
 
 Temporary runtime uncertainty is `unavailable`. A confirmed binding/generation
 change is `lost`, preserves operation/terminal identity and refuses dispatch.
-Container restart loses REPL memory. Register a new project binding for new
-work; neither attach nor a same-named replacement container restores the old ID.
+Container restart loses REPL memory. Create a new terminal after explicit
+rebind or new registration.
 
 ## Rollback
 
@@ -189,4 +192,5 @@ Revert the P3 phase commit and stop using the new terminal entrypoints. Preserve
 project/session/policy records, security ledger, terminal identities and Guest
 logs as evidence. Do not downgrade schemas or replay inputs. Any cleanup must
 name the exact owned terminal/fixture; do not prune shared resources or kill the
-user's default tmux server. P3 does not add P4 services, ports, WebUI or P5 rebind.
+user's default tmux server. P5 rebind retires the original terminal references,
+including on the same container ID with a new StartedAt.
