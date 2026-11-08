@@ -74,6 +74,21 @@ func (m *Manager) Recorded() ([]RecordedTerminal, error) {
 	return x, nil
 }
 
+// RetainedLoss returns diagnostic metadata for a lost backend without dispatching
+// to it. Callers are responsible for checking their own binding before use.
+func (m *Manager) RetainedLoss(id string) (Result, error) {
+	s, err := m.load()
+	if err != nil {
+		return Result{}, err
+	}
+	for _, r := range s.Records {
+		if r.Identity.ID == id && r.State == "lost" {
+			return result(r, saved(r)), nil
+		}
+	}
+	return Result{}, fmt.Errorf("resource_lost: no retained terminal loss")
+}
+
 // Config contains only trusted session callbacks. Callers cannot override these through a request.
 type Config struct {
 	Base     string

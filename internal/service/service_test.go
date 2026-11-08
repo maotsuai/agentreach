@@ -7,6 +7,7 @@ import (
 	"github.com/bojieli/agentreach/internal/policy"
 	"github.com/bojieli/agentreach/internal/project"
 	"github.com/bojieli/agentreach/internal/runtime/docker"
+	"github.com/bojieli/agentreach/internal/terminal"
 	"net"
 	"os"
 	"path/filepath"
@@ -140,6 +141,134 @@ func fixture(t *testing.T) (*Manager, *int) {
 	driver := &DockerDriver{Client: client, Project: project.Record{Spec: project.Spec{ID: "p4"}, Binding: project.Binding{ContainerID: workspace}}, Base: base, Paths: paths}
 	return New(Config{Base: base, Binding: binding, Policy: p, Check: check, Paths: paths, Docker: driver}), &mutations
 }
+func TestWorkspaceLogsPreserveTerminalDiagnostics(t *testing.T) {
+	zero := 0
+	for _, tt := range []struct {
+		name, state, gap, cursor, failOp, wantErr string
+		data, descendants                         string
+		exit                                      *int
+		complete                                  bool
+	}{
+		{name: "empty", state: "running"},
+		{name: "exited", state: "exited", data: "ok", complete: true, exit: &zero, descendants: "unconfirmed"},
+		{name: "closed before drain", state: "closed", gap: "closed_before_drain"},
+		{name: "output limit", state: "exited", gap: "output_limit", data: "ok"},
+		{name: "missing log", state: "lost", gap: "log_missing"},
+		{name: "old cursor", state: "exited", cursor: "old", wantErr: "output_gap: cursor instance/epoch"},
+		{name: "inspect failure", state: "running", gap: "backend_unavailable", failOp: "inspect", wantErr: "transport failure"},
+		{name: "read failure", state: "running", gap: "backend_unavailable", failOp: "read", wantErr: "transport failure"},
+		{name: "inspect save failure", state: "running", failOp: "save-inspect", wantErr: "terminal save failure"},
+		{name: "read save failure", state: "running", failOp: "save-read", wantErr: "terminal save failure"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			m, _ := fixture(t)
+			ctx := context.Background()
+			calls := 0
+			failSave := false
+			m.cfg.Terminal = terminal.New(terminal.Config{
+				Base: m.cfg.Base, Binding: m.cfg.Binding, Runtime: strings.Repeat("f", 64),
+				Policy: m.cfg.Policy, Check: m.cfg.Check,
+				Paths: func() error {
+					if failSave {
+						return fmt.Errorf("terminal save failure")
+					}
+					return m.cfg.Paths()
+				},
+				Launch: func(context.Context, string, []string, string) (string, error) { return "fixture", nil },
+				Dispatch: func(_ context.Context, q terminal.GuestRequest) (terminal.Observation, error) {
+					calls++
+					o := terminal.Observation{Identity: q.Identity, State: "running"}
+					if q.Op == "create" {
+						o.Identity.Server, o.Identity.Session, o.Identity.Pane = "boot:123:456", "$0", "%0"
+						return o, nil
+					}
+					if q.Op == tt.failOp {
+						return terminal.Observation{}, fmt.Errorf("transport failure")
+					}
+					o.State, o.Complete, o.ExitCode, o.Descendants = tt.state, tt.complete, tt.exit, tt.descendants
+					if tt.failOp == "" {
+						o.Gap = tt.gap
+					}
+					o.Offset = int64(len(tt.data))
+					if q.Op == "read" {
+						o.Data = []byte(tt.data)
+					}
+					if q.Op == "inspect" && tt.failOp == "save-inspect" {
+						failSave = true
+						o.Data = []byte("unexpected inspect data")
+					}
+					if q.Op == "read" && tt.failOp == "save-read" {
+						failSave = true
+						o.Data, o.Offset = []byte("x"), 1
+					}
+					return o, nil
+				},
+			})
+			v, err := m.cfg.Terminal.Call(ctx, "create", terminal.Request{RequestID: strings.Repeat("1", 32), Argv: []string{"fixture"}, Cols: 80, Rows: 24})
+			if err != nil {
+				t.Fatal(err)
+			}
+			backend := v.(terminal.Result)
+			spec := validSpec()
+			spec.Driver, spec.Image, spec.LogBytes = "workspace", "", terminal.MaxLog
+			r := Record{
+				ID: strings.Repeat("2", 32), RequestID: strings.Repeat("3", 32), Binding: m.cfg.Binding,
+				Spec: spec, Digest: Digest(spec), Generation: 1, State: "running", TerminalID: backend.TerminalID,
+				ContainerID: m.cfg.Docker.Project.Binding.ContainerID,
+				Endpoint:    docker.Endpoint{NetworkID: spec.NetworkID, EndpointID: "workspace-endpoint", IPAddress: "192.0.2.1"},
+			}
+			unlock, err := m.file().Lock(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = m.save(saved{Binding: m.cfg.Binding, Records: []Record{r}})
+			unlock()
+			if err != nil {
+				t.Fatal(err)
+			}
+			v, err = m.Call(ctx, "logs", Request{ServiceID: r.ID, MaxBytes: max(1, len(tt.data)), Cursor: tt.cursor})
+			if tt.wantErr == "" && err != nil || tt.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tt.wantErr)) {
+				t.Fatalf("logs error = %v, want %q", err, tt.wantErr)
+			}
+			b, err := json.Marshal(v)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got struct {
+				Service     Record `json:"service"`
+				Data        []byte `json:"data"`
+				Next        string `json:"next_cursor"`
+				Earliest    string `json:"earliest_available_cursor"`
+				Gap         string `json:"gap"`
+				Complete    bool   `json:"complete"`
+				ExitCode    *int   `json:"exit_code"`
+				Descendants string `json:"descendants"`
+			}
+			if err := json.Unmarshal(b, &got); err != nil {
+				t.Fatal(err)
+			}
+			prefix := backend.TerminalID + ":" + backend.Epoch + ":"
+			var next string
+			if tt.wantErr == "" {
+				next = fmt.Sprintf("%s%d", prefix, len(tt.data))
+			}
+			if got.Service.ID != r.ID || got.Earliest != prefix+"0" || got.Next != next ||
+				string(got.Data) != tt.data || got.Gap != tt.gap || got.Complete != tt.complete || got.Descendants != tt.descendants ||
+				(got.ExitCode == nil) != (tt.exit == nil) || got.ExitCode != nil && *got.ExitCode != *tt.exit {
+				t.Fatalf("unexpected log response: %s", b)
+			}
+			if tt.state == "lost" {
+				previousCalls := calls
+				v, err := m.Call(ctx, "logs", Request{ServiceID: r.ID, MaxBytes: MaxRead})
+				retained := v.(Result)
+				if err == nil || calls != previousCalls || retained.Service.ID != r.ID || retained.Gap != got.Gap || retained.EarliestCursor != got.Earliest || len(retained.Data) != 0 || retained.Cursor != "" {
+					t.Fatalf("unexpected repeated read after loss: %+v, %v", retained, err)
+				}
+			}
+		})
+	}
+}
+
 func slicesContain(a []string, v string) bool {
 	for _, x := range a {
 		if x == v {

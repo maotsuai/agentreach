@@ -77,6 +77,14 @@ MCP connection; ordinary approval/readiness failures do not. Lost objects are no
 resurrected when a same-name container or process appears. A fresh connection
 rechecks the binding but does not revive lost identities.
 
+Workspace log responses carry `next_cursor` and `earliest_available_cursor`
+from the supervised stream. `gap` reports known missing or incomplete output
+even when the read succeeds. `complete:true` confirms collection finished
+without a gap. `exit_code` and `descendants` report separate observations when
+available. A read error can include the service identity, the earliest cursor
+and gap details. Advance with `next_cursor` after a successful read, and use
+`earliest_available_cursor` to restart a read after an invalid or stale cursor.
+
 Repeated request IDs must have the same payload. An unresolved intent never
 dispatches again; query `host_status` by operation/request ID and inspect the
 retained service. Result-storage failures may leave a completed effect with an

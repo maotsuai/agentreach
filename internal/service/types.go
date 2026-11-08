@@ -116,10 +116,14 @@ type Record struct {
 
 // Result retains service and operation identity even when dispatch is uncertain.
 type Result struct {
-	Service  *Record `json:"service,omitempty"`
-	Data     []byte  `json:"data,omitempty"`
-	Cursor   string  `json:"next_cursor,omitempty"`
-	Complete bool    `json:"complete,omitempty"`
+	Service        *Record `json:"service,omitempty"`
+	Data           []byte  `json:"data,omitempty"`
+	Cursor         string  `json:"next_cursor,omitempty"`
+	EarliestCursor string  `json:"earliest_available_cursor,omitempty"`
+	Complete       bool    `json:"complete,omitempty"`
+	Gap            string  `json:"gap,omitempty"`
+	ExitCode       *int    `json:"exit_code,omitempty"`
+	Descendants    string  `json:"descendants,omitempty"`
 }
 
 // Summary is bounded list metadata; inspect returns the complete specification.

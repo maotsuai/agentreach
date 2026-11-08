@@ -156,9 +156,9 @@ func (m *Manager) failed(r *Record, e error) {
 	}
 }
 func (m *Manager) observe(ctx context.Context, r *Record) error {
-	return m.observeTarget(ctx, r, true)
+	return m.observeTarget(ctx, r, true, nil)
 }
-func (m *Manager) observeTarget(ctx context.Context, r *Record, readiness bool) error {
+func (m *Manager) observeTarget(ctx context.Context, r *Record, readiness bool, logFailure *terminal.Result) error {
 	if r.State == "lost" {
 		return fmt.Errorf("resource_lost: service identity retired")
 	}
@@ -174,11 +174,14 @@ func (m *Manager) observeTarget(ctx context.Context, r *Record, readiness bool) 
 			return fmt.Errorf("outcome_unknown: workspace backend unavailable")
 		}
 		v, e := m.cfg.Terminal.Call(ctx, "inspect", terminal.Request{TerminalID: r.TerminalID})
+		o, ok := v.(terminal.Result)
 		if e != nil {
+			if logFailure != nil {
+				*logFailure = o
+			}
 			m.failed(r, e)
 			return e
 		}
-		o, ok := v.(terminal.Result)
 		if !ok {
 			return fmt.Errorf("state_corrupt: service backend observation")
 		}
@@ -325,6 +328,10 @@ func (m *Manager) Call(ctx context.Context, op string, q Request) (any, error) {
 	if r == nil {
 		return nil, fmt.Errorf("service_unknown")
 	}
+	if op == "logs" && r.Spec.Driver == "workspace" && r.State == "lost" && r.Reason == "backend_lost" {
+		loss, err := m.cfg.Terminal.RetainedLoss(r.TerminalID)
+		return logDiagnostics(r, loss), errors.Join(fmt.Errorf("resource_lost: service identity retired"), err)
+	}
 	if op == "stop" && r.Spec.Driver == "workspace" {
 		view, e := m.cfg.Policy.Inspect()
 		if e != nil {
@@ -340,12 +347,17 @@ func (m *Manager) Call(ctx context.Context, op string, q Request) (any, error) {
 			}
 		}
 	}
-	e = m.observe(ctx, r)
+	var logFailure terminal.Result
+	if op == "logs" {
+		e = m.observeTarget(ctx, r, true, &logFailure)
+	} else {
+		e = m.observe(ctx, r)
+	}
 	if saveErr := m.save(s); saveErr != nil {
-		return Result{Service: r}, saveErr
+		return logDiagnostics(r, logFailure), saveErr
 	}
 	if e != nil {
-		return Result{Service: r}, e
+		return logDiagnostics(r, logFailure), e
 	}
 	switch op {
 	case "inspect":
@@ -380,17 +392,20 @@ func (m *Manager) Call(ctx context.Context, op string, q Request) (any, error) {
 	case "logs":
 		if r.Spec.Driver == "workspace" {
 			v, e := m.cfg.Terminal.Call(ctx, "read", terminal.Request{TerminalID: r.TerminalID, MaxBytes: q.MaxBytes, Cursor: q.Cursor})
-			if e != nil {
-				return Result{Service: r}, e
-			}
 			o, ok := v.(terminal.Result)
+			if e != nil {
+				return logDiagnostics(r, o), e
+			}
 			if !ok {
 				return Result{Service: r}, fmt.Errorf("state_corrupt: backend log response")
 			}
-			return Result{Service: r, Data: o.Data, Cursor: o.NextCursor, Complete: o.Complete}, nil
+			out := logDiagnostics(r, o)
+			out.Data = o.Data
+			out.Cursor = o.NextCursor
+			return out, nil
 		}
 		if q.Cursor != "" {
-			return nil, fmt.Errorf("unsupported: Docker log cursor; use bounded tail")
+			return Result{Service: r}, fmt.Errorf("unsupported: Docker log cursor; use bounded tail")
 		}
 		b, e := m.cfg.Docker.Client.ServiceLogs(ctx, r.ContainerID, 100)
 		if e != nil {
@@ -402,6 +417,17 @@ func (m *Manager) Call(ctx context.Context, op string, q Request) (any, error) {
 		return Result{Service: r, Data: b}, nil
 	}
 	return nil, fmt.Errorf("unsupported: service operation")
+}
+
+func logDiagnostics(r *Record, o terminal.Result) Result {
+	return Result{
+		Service:        r,
+		EarliestCursor: o.EarliestCursor,
+		Complete:       o.Complete,
+		Gap:            o.Gap,
+		ExitCode:       o.ExitCode,
+		Descendants:    o.Descendants,
+	}
 }
 
 // A retired connection may recover identifiers from private receipts, but it
@@ -971,7 +997,7 @@ func (m *Manager) IdentityTarget(ctx context.Context, id string, port uint16) (p
 	// App health probes can hold the lifecycle lock while an ordinary server
 	// waits for a request. Identity-only observation must not wait behind them.
 	observed := before
-	e = m.observeTarget(ctx, &observed, false)
+	e = m.observeTarget(ctx, &observed, false, nil)
 	if e != nil || observed.State != "running" {
 		if e == nil {
 			e = fmt.Errorf("exposure_unavailable: service process not running")
